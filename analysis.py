@@ -3,7 +3,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 
 
-def analyze_data(spark, ticker):
+def analyze_data(spark, ticker, days: int | str = 365):
     st.subheader(f"📊 Analyzing data for {ticker}")
     st.info("Analysis module is under development. Coming soon!")
     # Analysis logic will be implemented here
