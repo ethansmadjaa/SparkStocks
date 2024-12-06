@@ -34,13 +34,14 @@ def main():
     # Sidebar
     with st.sidebar:
         st.header("Configuration")
-        
+
         # User input for ticker
         ticker = st.text_input("Enter stock ticker:", "AAPL").upper()
-        
+
         # Time period selection
         st.subheader("Select Time Period")
         period_options = {
+            "1 day": 1,
             "1 Month": 30,
             "3 Months": 90,
             "6 Months": 180,
@@ -51,7 +52,7 @@ def main():
             "Max": None
         }
         selected_period = st.selectbox("Choose time period:", list(period_options.keys()))
-        
+
         # Verify if ticker exists
         try:
             stock = yf.Ticker(ticker)
