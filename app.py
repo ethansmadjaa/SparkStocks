@@ -43,7 +43,6 @@ def main():
         period_options = {
             "1 day": 1,
             "1 Month": 30,
-            "3 Months": 90,
             "6 Months": 180,
             "Year to Date": "ytd",
             "1 Year": 365,
