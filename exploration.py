@@ -15,37 +15,8 @@ from pyspark.sql.types import *
 from pyspark.sql.window import Window
 
 from utils.constants import STOCK_CATEGORIES
-
-
-def get_stock_data(spark: SparkSession, ticker: str, days: int = 365) -> DataFrame:
-    """Fetch stock data and convert to Spark DataFrame with optimized configuration."""
-    # Configure Spark for better performance
-    spark.conf.set("spark.sql.shuffle.partitions", "8")  # Adjust based on your data size
-    spark.conf.set("spark.sql.execution.arrow.enabled", "true")
-
-    # Get data from yfinance
-    stock = yf.Ticker(ticker)
-    end_date = datetime.now()
-    start_date = end_date - timedelta(days=days)
-
-    # Define schema for consistency
-    schema = StructType([
-        StructField("Date", TimestampType(), False),
-        StructField("Open", DoubleType(), True),
-        StructField("High", DoubleType(), True),
-        StructField("Low", DoubleType(), True),
-        StructField("Close", DoubleType(), True),
-        StructField("Volume", LongType(), True),
-        StructField("Dividends", DoubleType(), True),
-        StructField("Stock_Splits", DoubleType(), True)
-    ])
-
-    # Convert to Spark DataFrame
-    pdf = stock.history(start=start_date, end=end_date)
-    df = spark.createDataFrame(pdf.reset_index(), schema=schema)
-
-    # Cache the DataFrame since we'll be using it multiple times
-    return df.cache()
+from utils.data_utils import get_stock_data
+from preprocessing import calculate_rsi, calculate_macd, calculate_trading_signals
 
 
 def analyze_data_frequency(df: DataFrame) -> str:
@@ -571,7 +542,7 @@ def explore_data(spark: SparkSession, ticker: str, days: int = 365):
     )
     st.dataframe(returns_stats.toPandas())
 
-    # After returns analysis, add moving averages analysis
+    # Moving averages analysis
     st.write("### Moving Averages Analysis")
 
     # Calculate different moving averages for closing price
@@ -603,83 +574,6 @@ def explore_data(spark: SparkSession, ticker: str, days: int = 365):
         *[f"Close_MA_{period}" for period in ma_periods]
     ).limit(5)
     st.dataframe(recent_ma.toPandas())
-
-    # Add trading signals analysis
-    st.write("### Trading Signals Analysis")
-    df_with_signals = analyze_ma_signals(df_with_ma, short_period=5, long_period=20)
-
-    # Get current market position
-    latest_signal = df_with_signals.orderBy(desc("Date")).select("Date", "signal").first()
-
-    # Calculate current trend using multiple timeframes
-    current_price = df_with_signals.orderBy(desc("Date")).select("Close").first().Close
-    ma_5 = df_with_signals.orderBy(desc("Date")).select("Close_MA_5").first()["Close_MA_5"]
-    ma_20 = df_with_signals.orderBy(desc("Date")).select("Close_MA_20").first()["Close_MA_20"]
-    ma_50 = df_with_signals.orderBy(desc("Date")).select("Close_MA_50").first()["Close_MA_50"]
-
-    # Create columns for timeframe analysis
-    col1, col2, col3 = st.columns(3)
-
-    # Multi-timeframe analysis
-    with col1:
-        st.write("#### Short-term Signal")
-        if current_price > ma_5:
-            st.success("Price above 5-day MA (Bullish)")  # Short-term uptrend
-        else:
-            st.error("Price below 5-day MA (Bearish)")  # Short-term downtrend
-
-    with col2:
-        st.write("#### Medium-term Signal")
-        if current_price > ma_20:
-            st.success("Price above 20-day MA (Bullish)")  # Medium-term uptrend
-        else:
-            st.error("Price below 20-day MA (Bearish)")  # Medium-term downtrend
-
-    with col3:
-        st.write("#### Long-term Signal")
-        if current_price > ma_50:
-            st.success("Price above 50-day MA (Bullish)")  # Long-term uptrend
-        else:
-            st.error("Price below 50-day MA (Bearish)")  # Long-term downtrend
-
-    # Calculate overall sentiment
-    recent_signals = df_with_signals.orderBy(desc("Date")).limit(10)
-    bullish_count = recent_signals.filter(col("signal").contains("Bullish")).count()
-    bearish_count = recent_signals.filter(col("signal").contains("Bearish")).count()
-
-    # Sentiment strength calculation
-    sentiment = "Bullish" if bullish_count > bearish_count else "Bearish"
-    strength = abs(bullish_count - bearish_count) / 10  # Normalize to 0-1 scale
-
-    # Generate insight message
-    if latest_signal.signal == "Golden Cross (Buy)":
-        st.success(f"🔔 Recent Golden Cross detected! This is typically a strong bullish signal.")
-    elif latest_signal.signal == "Death Cross (Sell)":
-        st.error(f"🔔 Recent Death Cross detected! This is typically a strong bearish signal.")
-
-    # Overall market sentiment
-    if sentiment == "Bullish":
-        st.success(f"""
-        ### Overall Market Sentiment: {sentiment} (Strength: {strength:.1%})
-        
-        Current Analysis for {ticker}:
-        - Price is {'above' if current_price > ma_20 else 'below'} the 20-day moving average
-        - Short-term trend (5-day MA) is {'upward' if ma_5 > ma_20 else 'downward'}
-        - {'Strong buy signal' if strength > 0.7 else 'Moderate buy signal' if strength > 0.5 else 'Weak buy signal'}
-        
-        Always combine this technical analysis with fundamental analysis and your own research.
-        """)
-    else:
-        st.error(f"""
-        ### Overall Market Sentiment: {sentiment} (Strength: {strength:.1%})
-        
-        Current Analysis for {ticker}:
-        - Price is {'above' if current_price > ma_20 else 'below'} the 20-day moving average
-        - Short-term trend (5-day MA) is {'upward' if ma_5 > ma_20 else 'downward'}
-        - {'Strong sell signal' if strength > 0.7 else 'Moderate sell signal' if strength > 0.5 else 'Weak sell signal'}
-        
-        Always combine this technical analysis with fundamental analysis and your own research.
-        """)
 
     # Add stock correlation analysis
     st.write("### Stock Correlation Analysis")
@@ -918,4 +812,4 @@ def explore_data(spark: SparkSession, ticker: str, days: int = 365):
     else:
         st.warning("Insufficient data for summary analysis")
 
-    return df_with_signals
+    return df_with_ma
