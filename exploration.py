@@ -1,385 +1,283 @@
-from typing import Any
-
-from pyspark.sql import DataFrame
+from pyspark.sql import DataFrame, SparkSession
 import streamlit as st
 from pyspark.sql.functions import (
-    col, count, min, max, mean, stddev,
-    lag, when, lit, percentile_approx, skewness,
-    kurtosis, desc, sum, avg
+    col, date_trunc, desc, first, lag, 
+    mean, stddev, min, max, datediff, sum
 )
 from pyspark.sql.window import Window
 from pyspark.sql.types import *
-import plotly.graph_objects as go
 import yfinance as yf
 from datetime import datetime, timedelta
+import plotly.graph_objects as go
+import plotly.express as px
+from plotly.subplots import make_subplots
 
+def get_stock_data(spark: SparkSession, ticker: str, days: int = 365) -> DataFrame:
+    """Fetch stock data and convert to Spark DataFrame with optimized configuration."""
+    # Configure Spark for better performance
+    spark.conf.set("spark.sql.shuffle.partitions", "8")  # Adjust based on your data size
+    spark.conf.set("spark.sql.execution.arrow.enabled", "true")
+    
+    # Get data from yfinance
+    stock = yf.Ticker(ticker)
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=days)
+    
+    # Define schema for consistency
+    schema = StructType([
+        StructField("Date", TimestampType(), False),
+        StructField("Open", DoubleType(), True),
+        StructField("High", DoubleType(), True),
+        StructField("Low", DoubleType(), True),
+        StructField("Close", DoubleType(), True),
+        StructField("Volume", LongType(), True),
+        StructField("Dividends", DoubleType(), True),
+        StructField("Stock_Splits", DoubleType(), True)
+    ])
+    
+    # Convert to Spark DataFrame
+    pdf = stock.history(start=start_date, end=end_date)
+    df = spark.createDataFrame(pdf.reset_index(), schema=schema)
+    
+    # Cache the DataFrame since we'll be using it multiple times
+    return df.cache()
 
-def fetch_stock_data(spark, ticker: str, days: int | str = 365) -> Any | None:
-    """Fetch stock data and return as Spark DataFrame."""
-    try:
-        end_date = datetime.now()
+def analyze_data_frequency(df: DataFrame) -> str:
+    """Analyze the frequency of data points with optimized window operation."""
+    window_spec = Window.orderBy("Date")\
+                       .partitionBy(date_trunc("month", col("Date")))
+    
+    df_with_diff = df.withColumn("date_diff", 
+        datediff(col("Date"), lag("Date", 1).over(window_spec)))
+    
+    mode_freq = df_with_diff.groupBy("date_diff")\
+                           .count()\
+                           .orderBy(desc("count"))\
+                           .first()
+    
+    freq_mapping = {
+        1: "Daily",
+        7: "Weekly",
+        30: "Monthly",
+        365: "Yearly"
+    }
+    return freq_mapping.get(mode_freq["date_diff"], f"Custom ({mode_freq['date_diff']} days)")
 
-        if days is None:
-            stock_data = yf.download(ticker, period="max")
-        elif days == "ytd":
-            start_date = datetime(end_date.year, 1, 1)
-            stock_data = yf.download(ticker, start=start_date, end=end_date)
-        else:
-            start_date = end_date - timedelta(days=days)
-            stock_data = yf.download(ticker, start=start_date, end=end_date)
-
-        if stock_data.empty:
-            st.error(f"No data available for {ticker}")
-            return None
-
-        # Define schema for Spark DataFrame
-        schema = StructType([
-            StructField("Date", DateType(), False),
-            StructField("Open", DoubleType(), True),
-            StructField("High", DoubleType(), True),
-            StructField("Low", DoubleType(), True),
-            StructField("Close", DoubleType(), True),
-            StructField("Adj Close", DoubleType(), True),
-            StructField("Volume", LongType(), True)
+def calculate_basic_stats(df: DataFrame) -> DataFrame:
+    """Calculate basic statistics for numerical columns."""
+    numeric_cols = [f.name for f in df.schema.fields 
+                   if isinstance(f.dataType, (DoubleType, LongType))]
+    
+    # Create a list of expressions for the select statement
+    stats_expressions = []
+    for col_name in numeric_cols:
+        stats_expressions.extend([
+            mean(col_name).alias(f"{col_name}_mean"),
+            stddev(col_name).alias(f"{col_name}_stddev"),
+            min(col_name).alias(f"{col_name}_min"),
+            max(col_name).alias(f"{col_name}_max")
         ])
-
-        # Convert to Spark DataFrame
-        stock_data = stock_data.reset_index()
-        spark_df = spark.createDataFrame(stock_data, schema=schema)
-
-        st.success(f"Successfully fetched {spark_df.count()} days of data")
-        return spark_df
-
-    except Exception as e:
-        st.error(f"Error fetching data for {ticker}: {str(e)}")
-        return None
-
-
-def prepare_data(df: DataFrame) -> DataFrame:
-    """Prepare data with all necessary calculations using Spark."""
-    # Window for sequential calculations with partitioning
-    w = Window.partitionBy(lit(1)).orderBy("Date")  # Partition by constant for time series
-
-    # Calculate returns and changes
-    df = df.withColumn("prev_close", lag("Close").over(w))
-    df = df.withColumn("daily_return",
-                       when(col("prev_close").isNotNull(),
-                            ((col("Close") - col("prev_close")) / col("prev_close") * 100)
-                            ).otherwise(None)
-                       )
-
-    # Calculate volume changes
-    df = df.withColumn("prev_volume", lag("Volume").over(w))
-    df = df.withColumn("volume_change",
-                       when(col("prev_volume").isNotNull(),
-                            col("Volume") - col("prev_volume")
-                            ).otherwise(None)
-                       )
-
-    # Calculate moving averages with optimized windows
-    w_ma = Window.partitionBy(lit(1)).orderBy("Date").rowsBetween(-199, 0)  # Maximum window size needed
-
-    df = df.withColumn("MA20", avg("Close").over(w_ma.rowsBetween(-19, 0)))
-    df = df.withColumn("MA50", avg("Close").over(w_ma.rowsBetween(-49, 0)))
-    df = df.withColumn("MA200", avg("Close").over(w_ma))
-
-    # Calculate volatility windows
-    df = df.withColumn("volatility_20d",
-                       stddev("daily_return").over(w_ma.rowsBetween(-19, 0))
-                       )
-
-    # Repartition for better performance
-    df = df.repartition("Date")
-
-    return df
-
-
-def calculate_summary_stats(df: DataFrame) -> dict:
-    """Calculate summary statistics using Spark."""
-    stats = df.select([
-        mean("Close").alias("mean_price"),
-        stddev("Close").alias("std_price"),
-        min("Close").alias("min_price"),
-        max("Close").alias("max_price"),
-        mean("daily_return").alias("avg_return"),
-        stddev("daily_return").alias("volatility"),
-        skewness("Close").alias("skewness"),
-        kurtosis("Close").alias("kurtosis"),
-        percentile_approx("Close", 0.25).alias("q1"),
-        percentile_approx("Close", 0.5).alias("median"),
-        percentile_approx("Close", 0.75).alias("q3"),
-        avg("Volume").alias("avg_volume"),
-        sum(when(col("volume_change") > 0, 1)).alias("increasing_volume_days"),
-        count("*").alias("total_days")
-    ]).collect()[0]
-
+    
+    stats = df.select(stats_expressions)
     return stats
 
+def calculate_returns(df: DataFrame) -> DataFrame:
+    """Calculate daily, weekly, monthly returns with optimized window operations."""
+    # Partition by date for better performance
+    df = df.repartition("Date")
+    
+    # Daily returns
+    df = df.withColumn("daily_return", 
+        (col("Close") - col("Open")) / col("Open") * 100)
+    
+    # Weekly returns (using 5 trading days)
+    window_week = Window.orderBy("Date")\
+                       .rowsBetween(-5, 0)\
+                       .partitionBy(date_trunc("week", col("Date")))
+    
+    df = df.withColumn("weekly_return", 
+        ((col("Close") - first("Close").over(window_week)) / 
+         first("Close").over(window_week) * 100))
+    
+    # Monthly returns (using 21 trading days)
+    window_month = Window.orderBy("Date")\
+                        .rowsBetween(-21, 0)\
+                        .partitionBy(date_trunc("month", col("Date")))
+    
+    df = df.withColumn("monthly_return", 
+        ((col("Close") - first("Close").over(window_month)) / 
+         first("Close").over(window_month) * 100))
+    
+    return df
 
-def display_price_analysis(df: DataFrame, ticker: str):
-    """Display price analysis using Spark calculations."""
-    # Get latest price info
-    latest = df.orderBy(desc("Date")).first()
+def plot_stock_price_history(df: DataFrame, ticker: str):
+    """Create an interactive candlestick chart with volume."""
+    # Convert to pandas for plotting
+    pdf = df.toPandas()
+    
+    # Create the candlestick chart with volume subplot
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
+                       vertical_spacing=0.03, 
+                       subplot_titles=(f'{ticker} Stock Price', 'Volume'),
+                       row_heights=[0.7, 0.3])
 
-    # Calculate price changes
-    daily_change = ((latest.Close - latest.prev_close) / latest.prev_close * 100)
+    fig.add_trace(go.Candlestick(x=pdf['Date'],
+                                open=pdf['Open'],
+                                high=pdf['High'],
+                                low=pdf['Low'],
+                                close=pdf['Close'],
+                                name='OHLC'),
+                  row=1, col=1)
 
-    # Display metrics
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Current Price", f"${latest.Close:.2f}",
-                  f"{daily_change:+.2f}%")
-    with col2:
-        st.metric("Daily Volume", f"{latest.Volume:,}",
-                  f"{latest.volume_change:+,}")
-    with col3:
-        st.metric("20-Day Volatility",
-                  f"{latest.volatility_20d:.2f}%")
+    fig.add_trace(go.Bar(x=pdf['Date'],
+                        y=pdf['Volume'],
+                        name='Volume'),
+                  row=2, col=1)
 
-
-def display_technical_indicators(df: DataFrame):
-    """Display technical indicators calculated using Spark."""
-    latest = df.orderBy(desc("Date")).first()
-
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("MA20", f"${latest.MA20:.2f}",
-                  f"{((latest.Close - latest.MA20) / latest.MA20 * 100):+.2f}%")
-    with col2:
-        st.metric("MA50", f"${latest.MA50:.2f}",
-                  f"{((latest.Close - latest.MA50) / latest.MA50 * 100):+.2f}%")
-    with col3:
-        st.metric("MA200", f"${latest.MA200:.2f}",
-                  f"{((latest.Close - latest.MA200) / latest.MA200 * 100):+.2f}%")
-
-
-def create_price_chart(df: DataFrame, ticker: str) -> go.Figure:
-    """Create interactive price chart with moving averages and volume."""
-    # Convert necessary data to pandas for plotting
-    plot_data = df.select(
-        'Date', 'Close', 'Volume', 'MA20', 'MA50', 'MA200', 'volume_change'
-    ).orderBy('Date').toPandas()
-
-    # Create figure with secondary y-axis
-    fig = go.Figure()
-
-    # Add candlestick trace
-    fig.add_trace(
-        go.Scatter(
-            x=plot_data['Date'],
-            y=plot_data['Close'],
-            name='Price',
-            line=dict(color='#2962FF', width=2),
-            hovertemplate="<br>".join([
-                "Date: %{x}",
-                "Price: $%{y:.2f}",
-                "<extra></extra>"
-            ])
-        )
-    )
-
-    # Add moving averages
-    ma_colors = {'MA20': '#FF6D00', 'MA50': '#2E7D32', 'MA200': '#D32F2F'}
-
-    for ma in ['MA20', 'MA50', 'MA200']:
-        fig.add_trace(
-            go.Scatter(
-                x=plot_data['Date'],
-                y=plot_data[ma],
-                name=ma,
-                line=dict(color=ma_colors[ma], width=1, dash='dot'),
-                hovertemplate=f"{ma}: $%{{y:.2f}}<extra></extra>"
-            )
-        )
-
-    # Add volume bars to secondary y-axis
-    colors = ['rgba(0, 255, 0, 0.3)' if x >= 0 else 'rgba(255, 0, 0, 0.3)'
-              for x in plot_data['volume_change']]
-
-    fig.add_trace(
-        go.Bar(
-            x=plot_data['Date'],
-            y=plot_data['Volume'],
-            name='Volume',
-            marker_color=colors,
-            yaxis='y2',
-            hovertemplate="Volume: %{y:,.0f}<extra></extra>"
-        )
-    )
-
-    # Update layout with secondary y-axis
     fig.update_layout(
-        title=dict(
-            text=f'{ticker} Price History with Moving Averages',
-            x=0.5,
-            xanchor='center'
-        ),
-        xaxis_title='Date',
-        yaxis_title='Price ($)',
-        yaxis2=dict(
-            title='Volume',
-            overlaying='y',
-            side='right',
-            showgrid=False
-        ),
-        hovermode='x unified',
+        title=f'{ticker} Stock Price History',
+        yaxis_title='Stock Price',
+        yaxis2_title='Volume',
+        xaxis_rangeslider_visible=False,
+        height=800
+    )
+    
+    return fig
+
+def plot_returns_analysis(df: DataFrame):
+    """Create comprehensive returns analysis visualizations."""
+    pdf = df.select('Date', 'daily_return', 'weekly_return', 'monthly_return').toPandas()
+    
+    # Create subplots: Returns over time and Box plots
+    fig = make_subplots(
+        rows=2, cols=1,
+        subplot_titles=('Returns Over Time', 'Returns Distribution (Box Plot)'),
+        vertical_spacing=0.15,
+        row_heights=[0.7, 0.3]
+    )
+    
+    # Returns over time
+    fig.add_trace(
+        go.Scatter(x=pdf['Date'], y=pdf['daily_return'],
+                  name='Daily Returns', mode='lines',
+                  line=dict(color='blue', width=1)),
+        row=1, col=1
+    )
+    
+    fig.add_trace(
+        go.Scatter(x=pdf['Date'], y=pdf['weekly_return'],
+                  name='Weekly Returns', mode='lines',
+                  line=dict(color='green', width=1.5)),
+        row=1, col=1
+    )
+    
+    fig.add_trace(
+        go.Scatter(x=pdf['Date'], y=pdf['monthly_return'],
+                  name='Monthly Returns', mode='lines',
+                  line=dict(color='red', width=2)),
+        row=1, col=1
+    )
+    
+    # Box plots for returns distribution
+    fig.add_trace(
+        go.Box(y=pdf['daily_return'], name='Daily',
+               boxpoints='outliers', jitter=0.3,
+               whiskerwidth=0.2, marker_color='blue',
+               line_width=1),
+        row=2, col=1
+    )
+    
+    fig.add_trace(
+        go.Box(y=pdf['weekly_return'], name='Weekly',
+               boxpoints='outliers', jitter=0.3,
+               whiskerwidth=0.2, marker_color='green',
+               line_width=1),
+        row=2, col=1
+    )
+    
+    fig.add_trace(
+        go.Box(y=pdf['monthly_return'], name='Monthly',
+               boxpoints='outliers', jitter=0.3,
+               whiskerwidth=0.2, marker_color='red',
+               line_width=1),
+        row=2, col=1
+    )
+    
+    # Update layout
+    fig.update_layout(
+        height=800,
+        showlegend=True,
         legend=dict(
-            yanchor="top",
-            y=0.99,
-            xanchor="left",
-            x=0.01,
-            bgcolor='rgba(255, 255, 255, 0.8)'
-        ),
-        plot_bgcolor='white',
-        xaxis=dict(
-            showgrid=True,
-            gridwidth=1,
-            gridcolor='lightgray'
-        ),
-        yaxis=dict(
-            showgrid=True,
-            gridwidth=1,
-            gridcolor='lightgray',
-            side='left'
-        ),
-        margin=dict(l=0, r=0, t=30, b=0)
-    )
-
-    return fig
-
-
-def create_volume_chart(df: DataFrame, ticker: str) -> go.Figure:
-    """Create interactive volume chart with color-coded bars."""
-    # Get necessary data
-    plot_data = df.select(
-        'Date', 'Volume', 'volume_change'
-    ).toPandas()
-
-    colors = ['rgba(0, 255, 0, 0.5)' if x >= 0 else 'rgba(255, 0, 0, 0.5)'
-              for x in plot_data['volume_change']]
-
-    fig = go.Figure()
-
-    fig.add_trace(
-        go.Bar(
-            x=plot_data['Date'],
-            y=plot_data['Volume'],
-            marker_color=colors,
-            name='Volume'
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1
         )
     )
-
-    fig.update_layout(
-        title=f'{ticker} Trading Volume',
-        xaxis_title='Date',
-        yaxis_title='Volume',
-        hovermode='x unified'
-    )
-
+    
+    # Update axes
+    fig.update_yaxes(title_text="Return (%)", row=1, col=1)
+    fig.update_yaxes(title_text="Return (%)", row=2, col=1)
+    fig.update_xaxes(title_text="Date", row=1, col=1)
+    
     return fig
 
-
-def create_returns_distribution(df: DataFrame, ticker: str) -> go.Figure:
-    """Create distribution plot of daily returns."""
-    plot_data = df.select('daily_return').toPandas()
-
-    fig = go.Figure()
-
-    fig.add_trace(
-        go.Histogram(
-            x=plot_data['daily_return'],
-            nbinsx=50,
-            name='Daily Returns',
-            marker_color='rgba(0, 123, 255, 0.6)'
-        )
-    )
-
-    fig.update_layout(
-        title=f'{ticker} Daily Returns Distribution',
-        xaxis_title='Daily Return (%)',
-        yaxis_title='Frequency',
-        showlegend=False
-    )
-
-    return fig
-
-
-def explore_data(spark, ticker: str, days: int = 365):
-    """Main function for data exploration using Spark."""
-    st.subheader(f"📊 Exploring Data for {ticker}")
-
-    # 1. Data Loading and Processing
-    with st.spinner("Fetching and processing data..."):
-        df = fetch_stock_data(spark, ticker, days)
-        if df is None:
-            return
-
-        # Prepare data with all calculations
-        df = prepare_data(df)
-
-        # Cache the DataFrame as we'll be using it multiple times
-        df.cache()
-
-    # 2. Current Price Analysis
-    st.write("### 📈 Price Analysis")
-    display_price_analysis(df, ticker)
-
-    # 3. Technical Indicators
-    st.write("### 📊 Technical Indicators")
-    display_technical_indicators(df)
-
-    # 4. Statistical Summary
-    st.write("### 📉 Statistical Summary")
-    stats = calculate_summary_stats(df)
-
-    # Display statistics in columns
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("Average Price", f"${stats.mean_price:.2f}")
-        st.metric("Volatility", f"{stats.volatility:.2f}%")
-    with col2:
-        st.metric("Minimum", f"${stats.min_price:.2f}")
-        st.metric("Maximum", f"${stats.max_price:.2f}")
-    with col3:
-        st.metric("Skewness", f"{stats.skewness:.2f}")
-        st.metric("Kurtosis", f"{stats.kurtosis:.2f}")
-    with col4:
-        st.metric("Avg Volume", f"{stats.avg_volume:,.0f}")
-        st.metric("Up Volume Days",
-                  f"{(stats.increasing_volume_days / stats.total_days * 100):.1f}%")
-
-    # 5. Data Sample
-    st.write("### 🔍 Data Sample")
+def explore_data(spark: SparkSession, ticker: str, days: int = 365):
+    """Main function for data exploration."""
+    st.subheader(f"📊 Exploring data for {ticker}")
+    
+    # Fetch and prepare data
+    df = get_stock_data(spark, ticker, days)
+    
+    # Stock Price History Visualization
+    st.write("### Stock Price History")
+    fig_price = plot_stock_price_history(df, ticker)
+    st.plotly_chart(fig_price, use_container_width=True)
+    
+    # Display basic information
+    st.write("### Data Preview")
     col1, col2 = st.columns(2)
     with col1:
-        st.write("Recent Data:")
-        st.dataframe(df.orderBy(desc("Date")).limit(5).toPandas())
+        st.write("First 40 rows:")
+        st.dataframe(df.limit(40).toPandas(), height=400)
     with col2:
-        st.write("Summary Statistics:")
-        st.dataframe(df.select("Close", "Volume", "daily_return")
-                     .summary().toPandas())
-
-    # Add Charts Section
-    st.write("### 📊 Interactive Charts")
-
-    # Price Chart with Moving Averages
-    st.plotly_chart(
-        create_price_chart(df, ticker),
-        use_container_width=True
+        st.write("Last 40 rows:")
+        st.dataframe(df.orderBy(desc("Date")).limit(40).toPandas(), height=400)
+    
+    # Data frequency
+    freq = analyze_data_frequency(df)
+    st.write(f"### Data Frequency: {freq}")
+    
+    # Basic statistics
+    st.write("### Basic Statistics")
+    stats = calculate_basic_stats(df)
+    st.dataframe(stats.toPandas())
+    
+    # Missing values analysis
+    st.write("### Missing Values Analysis")
+    missing_counts = df.select([sum(col(c).isNull().cast("int")).alias(c) 
+                              for c in df.columns])
+    st.dataframe(missing_counts.toPandas())
+    
+    # Returns analysis
+    st.write("### Returns Analysis")
+    df_with_returns = calculate_returns(df)
+    
+    # Display returns visualization
+    fig_returns = plot_returns_analysis(df_with_returns)
+    st.plotly_chart(fig_returns, use_container_width=True)
+    
+    # Display summary statistics for returns
+    st.write("### Returns Summary Statistics")
+    returns_stats = df_with_returns.select(
+        mean("daily_return").alias("Average Daily Return (%)"),
+        stddev("daily_return").alias("Daily Return Volatility (%)"),
+        mean("weekly_return").alias("Average Weekly Return (%)"),
+        stddev("weekly_return").alias("Weekly Return Volatility (%)"),
+        mean("monthly_return").alias("Average Monthly Return (%)"),
+        stddev("monthly_return").alias("Monthly Return Volatility (%)")
     )
-
-    # Volume Analysis
-    col1, col2 = st.columns(2)
-    with col1:
-        st.plotly_chart(
-            create_volume_chart(df, ticker),
-            use_container_width=True
-        )
-    with col2:
-        st.plotly_chart(
-            create_returns_distribution(df, ticker),
-            use_container_width=True
-        )
-
-    # Uncache the DataFrame
-    df.unpersist()
+    st.dataframe(returns_stats.toPandas())
+    
+    return df_with_returns
