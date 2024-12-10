@@ -10,9 +10,7 @@ def create_spark_session(config=None):
         "spark.driver.memory": "4g",
         "spark.executor.memory": "4g",
         "spark.driver.maxResultSize": "2g",
-        "spark.sql.execution.arrow.enabled": "true",
         "spark.sql.execution.arrow.pyspark.enabled": "true",
-        # Increase code cache size to address the warning
         "spark.driver.extraJavaOptions": "-XX:ReservedCodeCacheSize=256M"
     }
     
