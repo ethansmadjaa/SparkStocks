@@ -21,18 +21,23 @@ def get_ytd_days():
 
 def get_stock_info(ticker: str) -> dict:
     # This function gets all the important details about a stock
-    # We use yfinance to fetch real-time data about the company
-    # If something goes wrong (like a bad ticker), we return None
     try:
         stock = yf.Ticker(ticker)
         info = stock.info
-        # We're grabbing the most important info that users want to see
+        
+        # Get the current price and previous close to calculate price change
+        current_price = info.get("currentPrice", 0)
+        previous_close = info.get("previousClose", current_price)
+        price_change = ((current_price - previous_close) / previous_close * 100) if previous_close else 0
+        
         return {
-            "name": info.get("longName", "N/A"),  # Full company name
-            "sector": info.get("sector", "N/A"),  # What sector it's in (like Tech, Healthcare)
-            "industry": info.get("industry", "N/A"),  # More specific industry
-            "market_cap": info.get("marketCap", 0),  # How much the company is worth
-            "current_price": info.get("currentPrice", 0)  # Current stock price
+            "name": info.get("longName", "N/A"),
+            "sector": info.get("sector", "N/A"),
+            "industry": info.get("industry", "N/A"),
+            "market_cap": info.get("marketCap", 0),
+            "current_price": current_price,
+            "price_change": price_change,
+            "volume": info.get("volume", 0)
         }
     except:
         return None
@@ -71,11 +76,32 @@ def main():
         .main { padding: 0rem 1rem; }
         .stTabs [data-baseweb="tab-list"] { gap: 2px; }
         .stTabs [data-baseweb="tab"] { padding: 10px 20px; }
+        
+        /* Improved styling for stock details in sidebar */
         .stock-info {
-            padding: 10px;
+            background-color: #262730;
             border-radius: 5px;
-            background-color: #f0f2f6;
+            padding: 15px;
             margin: 10px 0;
+            border: 1px solid #464B5C;
+        }
+        .stock-info h4 {
+            color: #FFFFFF;
+            margin: 0 0 10px 0;
+            font-size: 1.1em;
+        }
+        .stock-info p {
+            color: #FAFAFA;
+            margin: 5px 0;
+            font-size: 0.9em;
+        }
+        .stock-info .highlight {
+            color: #00CC96;
+            font-weight: bold;
+        }
+        .stock-info .label {
+            color: #9BA1B9;
+            margin-right: 5px;
         }
         </style>
     """, unsafe_allow_html=True)
@@ -203,11 +229,12 @@ def main():
         # Display the info in a nice formatted box
         st.sidebar.markdown(f"""
         <div class="stock-info">
-        <b>{stock_info['name']}</b> ({selected_stock})<br>
-        • Sector: {stock_info['sector']}<br>
-        • Industry: {stock_info['industry']}<br>
-        • Market Cap: {format_market_cap(stock_info['market_cap'])}<br>
-        • Current Price: ${stock_info['current_price']:.2f}
+        <h4>{selected_stock} - {stock_info['name']}</h4>
+        <p><span class="label">Price:</span> <span class="highlight">${stock_info['current_price']:.2f}</span></p>
+        <p><span class="label">Change:</span> <span class="highlight">{stock_info['price_change']:.2f}%</span></p>
+        <p><span class="label">Volume:</span> {stock_info['volume']:,}</p>
+        <p><span class="label">Market Cap:</span> ${format_market_cap(stock_info['market_cap'])}</p>
+        <p><span class="label">Sector:</span> {stock_info['sector']}</p>
         </div>
         """, unsafe_allow_html=True)
 
