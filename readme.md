@@ -69,20 +69,26 @@ The project is modular, consisting of the following main components:
 
 2. Set up a virtual environment and activate it:
 
+   On MacOS:
+
    ```sh
    python3 -m venv .venv
    source .venv/bin/activate  
-   # On Windows: 
+   ```
+   on Windows
+   ```sh
+   python -m venv .venv
    .\.venv\Scripts\activate
    ```
+   
 
-3. Install the required dependencies:
+4. Install the required dependencies:
 
    ```sh
    pip install -r requirements.txt
    ```
 
-4. Run the Streamlit app:
+5. Run the Streamlit app:
 
    ```sh
    streamlit run app.py
