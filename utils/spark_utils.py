@@ -7,11 +7,12 @@ def create_spark_session(config=None):
         "spark.sql.adaptive.enabled": "true",
         "spark.sql.adaptive.coalescePartitions.enabled": "true",
         "spark.sql.shuffle.partitions": "8",
-        "spark.driver.memory": "4g",
-        "spark.executor.memory": "4g",
-        "spark.driver.maxResultSize": "2g",
+        "spark.driver.memory": "2g",
+        "spark.executor.memory": "2g",
+        "spark.driver.maxResultSize": "1g",
         "spark.sql.execution.arrow.pyspark.enabled": "true",
-        "spark.driver.extraJavaOptions": "-XX:ReservedCodeCacheSize=256M"
+        "spark.sql.shuffle.partitions": "10",
+        "spark.sql.window.exec.buffer.spill.threshold": "10000"
     }
     
     builder = SparkSession.builder.appName("Stock Analysis")
