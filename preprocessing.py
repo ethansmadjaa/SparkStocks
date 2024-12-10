@@ -1,13 +1,13 @@
 # This is where we do all the technical analysis stuff
 # We calculate things like RSI, MACD, and Bollinger Bands to help understand stock movements
-from pyspark.sql import DataFrame, SparkSession
+import plotly.graph_objects as go
 import streamlit as st
+from plotly.subplots import make_subplots
+from pyspark.sql import SparkSession
 from pyspark.sql.functions import *
 from pyspark.sql.window import Window
-from pyspark.sql.types import *
+
 from exploration import get_stock_data
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 
 
 def calculate_rsi(df: DataFrame, period: int = 14) -> DataFrame:
