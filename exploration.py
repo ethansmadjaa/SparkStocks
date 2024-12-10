@@ -2,7 +2,9 @@ from pyspark.sql import DataFrame, SparkSession
 import streamlit as st
 from pyspark.sql.functions import (
     col, date_trunc, desc, first, lag,
-    mean, stddev, min, max, datediff, sum, when
+    mean, stddev, min, max, datediff, sum, when,
+    expr, corr, percentile_approx, greatest, array,
+    abs as spark_abs, coalesce, lit
 )
 from pyspark.sql.window import Window
 from pyspark.sql.types import *
@@ -11,6 +13,7 @@ from datetime import datetime, timedelta
 import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
+from utils.constants import STOCK_CATEGORIES
 
 
 def get_stock_data(spark: SparkSession, ticker: str, days: int = 365) -> DataFrame:
@@ -347,9 +350,129 @@ def analyze_ma_signals(df: DataFrame, short_period: int = 5, long_period: int = 
     return df
 
 
+def calculate_stock_correlation(spark: SparkSession, ticker1: str, ticker2: str, days: int = 365) -> dict:
+    """Calculate correlation between two stocks across different metrics."""
+    # Get data for both stocks
+    df1 = get_stock_data(spark, ticker1, days)
+    df2 = get_stock_data(spark, ticker2, days)
+    
+    # Rename columns in both dataframes before joining to avoid ambiguity
+    df1_renamed = df1.select(
+        col("Date"),
+        col("Close").alias(f"Close_{ticker1}"),
+        col("Volume").alias(f"Volume_{ticker1}"),
+        col("Open").alias(f"Open_{ticker1}"),
+        col("High").alias(f"High_{ticker1}"),
+        col("Low").alias(f"Low_{ticker1}")
+    )
+    
+    df2_renamed = df2.select(
+        col("Date"),
+        col("Close").alias(f"Close_{ticker2}"),
+        col("Volume").alias(f"Volume_{ticker2}"),
+        col("Open").alias(f"Open_{ticker2}"),
+        col("High").alias(f"High_{ticker2}"),
+        col("Low").alias(f"Low_{ticker2}")
+    )
+    
+    # Join dataframes on date
+    joined_df = df1_renamed.join(df2_renamed, on="Date", how="inner")
+    
+    # Calculate correlations for different metrics
+    metrics = ["Close", "Volume", "Open", "High", "Low"]
+    correlations = {}
+    
+    for metric in metrics:
+        # Use explicit column names in correlation calculation
+        col1 = f"{metric}_{ticker1}"
+        col2 = f"{metric}_{ticker2}"
+        
+        correlation = joined_df.select(
+            expr(f"corr({col1}, {col2})")
+        ).first()[0]
+        
+        correlations[metric] = correlation if correlation is not None else 0.0
+    
+    return correlations
+
+
+def plot_correlation_comparison(df1: DataFrame, df2: DataFrame, ticker1: str, ticker2: str):
+    """Create visualization comparing two stocks."""
+    # Convert to pandas for plotting
+    pdf1 = df1.select("Date", "Close").toPandas()
+    pdf2 = df2.select("Date", "Close").toPandas()
+    
+    # Normalize prices for comparison
+    pdf1["Normalized"] = pdf1["Close"] / pdf1["Close"].iloc[0] * 100
+    pdf2["Normalized"] = pdf2["Close"] / pdf2["Close"].iloc[0] * 100
+    
+    # Create figure
+    fig = make_subplots(rows=2, cols=1,
+                        subplot_titles=("Price Comparison (Normalized)", "Price Movement Correlation"),
+                        vertical_spacing=0.15,
+                        row_heights=[0.7, 0.3])
+    
+    # Add normalized price lines
+    fig.add_trace(
+        go.Scatter(x=pdf1["Date"], y=pdf1["Normalized"],
+                   name=f"{ticker1}", line=dict(color="blue")),
+        row=1, col=1
+    )
+    
+    fig.add_trace(
+        go.Scatter(x=pdf2["Date"], y=pdf2["Normalized"],
+                   name=f"{ticker2}", line=dict(color="red")),
+        row=1, col=1
+    )
+    
+    # Add scatter plot for correlation
+    fig.add_trace(
+        go.Scatter(x=pdf1["Close"], y=pdf2["Close"],
+                   mode="markers", name="Price Correlation",
+                   marker=dict(color="green", size=6, opacity=0.5)),
+        row=2, col=1
+    )
+    
+    # Update layout
+    fig.update_layout(
+        height=800,
+        showlegend=True,
+        title_text=f"Stock Comparison: {ticker1} vs {ticker2}"
+    )
+    
+    # Update axes
+    fig.update_yaxes(title_text="Normalized Price (%)", row=1, col=1)
+    fig.update_yaxes(title_text=f"{ticker2} Price ($)", row=2, col=1)
+    fig.update_xaxes(title_text="Date", row=1, col=1)
+    fig.update_xaxes(title_text=f"{ticker1} Price ($)", row=2, col=1)
+    
+    return fig
+
+
+def calculate_volatility_metrics(df: DataFrame) -> DataFrame:
+    """Calculate various volatility metrics."""
+    window_daily = Window.orderBy("Date").rowsBetween(-1, 0)
+    
+    # Daily price changes and volatility metrics
+    df_vol = df.withColumn(
+        "daily_change", 
+        ((col("Close") - lag("Close", 1).over(Window.orderBy("Date"))) / 
+         lag("Close", 1).over(Window.orderBy("Date")) * 100)
+    ).withColumn(
+        "true_range",
+        greatest(
+            col("High") - col("Low"),
+            spark_abs(col("High") - lag("Close", 1).over(Window.orderBy("Date"))),
+            spark_abs(col("Low") - lag("Close", 1).over(Window.orderBy("Date")))
+        )
+    )
+    
+    return df_vol
+
+
 def explore_data(spark: SparkSession, ticker: str, days: int = 365):
     """Main function for data exploration."""
-    st.subheader(f"📊 Exploring data for {ticker}")
+    st.subheader(f"Exploring data for {ticker}")
 
     # Fetch and prepare data
     df = get_stock_data(spark, ticker, days)
@@ -513,5 +636,242 @@ def explore_data(spark: SparkSession, ticker: str, days: int = 365):
         
         Always combine this technical analysis with fundamental analysis and your own research.
         """)
+
+    # Add stock correlation analysis
+    st.write("### Stock Correlation Analysis")
+    
+    # Allow user to select another stock for comparison
+    st.write("Compare with another stock:")
+    comparison_method = st.radio(
+        "Select comparison stock by:",
+        ["Category", "Custom Ticker"],
+        key="correlation_method"
+    )
+    
+    if comparison_method == "Category":
+        category = st.selectbox(
+            "Select Category",
+            list(STOCK_CATEGORIES.keys()),
+            key="correlation_category"
+        )
+        stock_options = STOCK_CATEGORIES[category]
+        comparison_ticker = st.selectbox(
+            "Select Stock",
+            [s for s in stock_options.keys() if s != ticker],
+            format_func=lambda x: f"{x} - {stock_options[x]}",
+            key="correlation_stock"
+        )
+    else:
+        comparison_ticker = st.text_input(
+            "Enter Stock Ticker for Comparison",
+            max_chars=5,
+            key="correlation_ticker"
+        ).upper()
+    
+    if comparison_ticker and comparison_ticker != ticker:
+        # Calculate correlations
+        correlations = calculate_stock_correlation(spark, ticker, comparison_ticker, days)
+        
+        # Display correlation results
+        st.write(f"#### Correlation between {ticker} and {comparison_ticker}")
+        
+        # Create correlation metrics display
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.metric("Price Correlation", 
+                     f"{correlations['Close']:.2f}",
+                     help="Correlation between closing prices")
+        
+        with col2:
+            st.metric("Volume Correlation",
+                     f"{correlations['Volume']:.2f}",
+                     help="Correlation between trading volumes")
+        
+        with col3:
+            st.metric("Price Range Correlation",
+                     f"{(correlations['High'] + correlations['Low'])/2:.2f}",
+                     help="Average correlation of price ranges")
+        
+        # Get comparison stock data
+        df_comparison = get_stock_data(spark, comparison_ticker, days)
+        
+        # Create comparison visualization
+        fig_comparison = plot_correlation_comparison(df, df_comparison, ticker, comparison_ticker)
+        st.plotly_chart(fig_comparison, use_container_width=True)
+        
+        # Add correlation interpretation
+        st.write("#### Correlation Interpretation")
+        correlation_value = correlations['Close']
+        if abs(correlation_value) > 0.7:
+            st.write(f"Strong {'positive' if correlation_value > 0 else 'negative'} correlation")
+        elif abs(correlation_value) > 0.3:
+            st.write(f"Moderate {'positive' if correlation_value > 0 else 'negative'} correlation")
+        else:
+            st.write("Weak correlation")
+        
+        st.write("""
+        Correlation ranges from -1 to +1:
+        - +1: Perfect positive correlation
+        - 0: No correlation
+        - -1: Perfect negative correlation
+        
+        Note: Correlation doesn't imply causation. Always consider other factors in your analysis.
+        """)
+    
+    # Add 8 Key Insights Section
+    st.write("### 🔍 Key Market Insights")
+    
+    # 1. Volume-Price Correlation Analysis
+    st.write("#### 1. Volume-Price Relationship")
+    volume_price_corr = df.select(corr("Volume", "Close")).first()[0]
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric(
+            "Volume-Price Correlation",
+            f"{volume_price_corr:.2f}",
+            help="Correlation between trading volume and closing price"
+        )
+    
+    # 2. Trading Range Analysis
+    df_stats = df.agg(
+        mean("High").alias("avg_high"),
+        mean("Low").alias("avg_low"),
+        mean("Close").alias("avg_close")
+    ).first()
+    
+    with col2:
+        trading_range = ((df_stats["avg_high"] - df_stats["avg_low"]) / df_stats["avg_close"]) * 100
+        st.metric(
+            "Average Trading Range",
+            f"{trading_range:.2f}%",
+            help="Average price range as percentage of closing price"
+        )
+    
+    # 3. Volume Profile
+    st.write("#### 2. Volume Analysis")
+    df_vol = calculate_volatility_metrics(df)
+    avg_volume = df.select(mean("Volume")).first()[0]
+    high_volume_days = df.filter(col("Volume") > avg_volume * 1.5).count()
+    volume_ratio = (high_volume_days / df.count()) * 100
+    
+    st.write(f"- {volume_ratio:.1f}% of trading days show high volume (>50% above average)")
+    
+    # 4. Price Momentum
+    st.write("#### 3. Price Momentum")
+    momentum_window = 10
+    df_momentum = df_vol.withColumn(
+        "momentum_10d",
+        ((col("Close") - lag("Close", momentum_window).over(Window.orderBy("Date"))) /
+         lag("Close", momentum_window).over(Window.orderBy("Date")) * 100)
+    )
+    
+    recent_momentum = df_momentum.orderBy(desc("Date")).select("momentum_10d").first()[0]
+    st.metric(
+        "10-Day Price Momentum",
+        f"{recent_momentum:.2f}%",
+        help="Percentage price change over last 10 trading days"
+    )
+    
+    # 5. Volatility Analysis
+    st.write("#### 4. Volatility Analysis")
+    daily_volatility = df_vol.select(stddev("daily_change")).first()[0]
+    avg_true_range = df_vol.select(mean("true_range")).first()[0]
+    
+    col3, col4 = st.columns(2)
+    with col3:
+        st.metric(
+            "Daily Volatility",
+            f"{daily_volatility:.2f}%",
+            help="Standard deviation of daily price changes"
+        )
+    with col4:
+        st.metric(
+            "Average True Range",
+            f"${avg_true_range:.2f}",
+            help="Average of true price ranges"
+        )
+    
+    # 6. Gap Analysis
+    st.write("#### 5. Price Gap Analysis")
+    df_gaps = df.withColumn(
+        "gap",
+        ((col("Open") - lag("Close", 1).over(Window.orderBy("Date"))) /
+         lag("Close", 1).over(Window.orderBy("Date")) * 100)
+    )
+    
+    significant_gaps = df_gaps.filter(spark_abs(col("gap")) > 1).count()
+    gap_ratio = (significant_gaps / df.count()) * 100
+    st.write(f"- {gap_ratio:.1f}% of trading days show significant gaps (>1%)")
+    
+    # 7. Support/Resistance Levels
+    st.write("#### 6. Support & Resistance Levels")
+    price_distribution = df.select(
+        percentile_approx("Close", array(lit(0.1), lit(0.9))).alias("price_levels")
+    ).first()
+    
+    support_level = price_distribution["price_levels"][0]
+    resistance_level = price_distribution["price_levels"][1]
+    current_price = df.orderBy(desc("Date")).select("Close").first()[0]
+    
+    col5, col6 = st.columns(2)
+    with col5:
+        st.metric(
+            "Support Level", 
+            f"${support_level:.2f}",
+            delta=f"{((current_price - support_level)/support_level * 100):.1f}% from current"
+        )
+    with col6:
+        st.metric(
+            "Resistance Level", 
+            f"${resistance_level:.2f}",
+            delta=f"{((resistance_level - current_price)/current_price * 100):.1f}% from current"
+        )
+    
+    # 8. Market Efficiency
+    st.write("#### 7. Market Efficiency Metrics")
+    # Calculate how often price moves follow the previous day's direction
+    df_efficiency = df_vol.withColumn(
+        "trend_following",
+        when(
+            ((col("daily_change") > 0) & (lag("daily_change", 1).over(Window.orderBy("Date")) > 0)) |
+            ((col("daily_change") < 0) & (lag("daily_change", 1).over(Window.orderBy("Date")) < 0)),
+            1
+        ).otherwise(0)
+    )
+    
+    efficiency_ratio = df_efficiency.select(
+        coalesce(mean("trend_following"), lit(0))
+    ).first()[0] * 100
+    
+    st.metric(
+        "Market Efficiency Ratio",
+        f"{efficiency_ratio:.1f}%",
+        help="Percentage of price moves following previous day's direction"
+    )
+    
+    # Summary Insights
+    st.write("#### 8. Summary Analysis")
+    current_metrics = df.orderBy(desc("Date")).first()
+    avg_metrics = df.agg(
+        mean("Close").alias("avg_price"),
+        mean("Volume").alias("avg_volume")
+    ).first()
+    
+    if current_metrics and avg_metrics:
+        price_vs_avg = ((current_metrics["Close"] - avg_metrics["avg_price"]) / 
+                        avg_metrics["avg_price"] * 100)
+        volume_vs_avg = ((current_metrics["Volume"] - avg_metrics["avg_volume"]) / 
+                         avg_metrics["avg_volume"] * 100)
+        
+        st.write(f"""
+        Current Market Position:
+        - Price is {abs(float(price_vs_avg)):.1f}% {'above' if price_vs_avg > 0 else 'below'} the period average
+        - Volume is {abs(float(volume_vs_avg)):.1f}% {'above' if volume_vs_avg > 0 else 'below'} the period average
+        - Volatility is {'high' if daily_volatility > 2 else 'moderate' if daily_volatility > 1 else 'low'}
+        - Market efficiency suggests {'trending' if efficiency_ratio > 60 else 'ranging'} behavior
+        """)
+    else:
+        st.warning("Insufficient data for summary analysis")
 
     return df_with_signals
