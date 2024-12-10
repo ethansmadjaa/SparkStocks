@@ -40,6 +40,7 @@ STOCK_CATEGORIES = {
     }
 }
 
+
 def get_stock_info(ticker: str) -> dict:
     """Get basic stock information."""
     try:
@@ -55,38 +56,40 @@ def get_stock_info(ticker: str) -> dict:
     except:
         return None
 
+
 def format_market_cap(market_cap: int) -> str:
     """Format market cap in billions/millions."""
     if market_cap >= 1e12:
-        return f"${market_cap/1e12:.1f}T"
+        return f"${market_cap / 1e12:.1f}T"
     elif market_cap >= 1e9:
-        return f"${market_cap/1e9:.1f}B"
+        return f"${market_cap / 1e9:.1f}B"
     elif market_cap >= 1e6:
-        return f"${market_cap/1e6:.1f}M"
+        return f"${market_cap / 1e6:.1f}M"
     else:
         return f"${market_cap:,.0f}"
 
+
 def main():
     st.set_page_config(page_title="Stock Analysis Dashboard", layout="wide")
-    
+
     st.title("📈 Stock Analysis Dashboard")
-    
+
     # Sidebar for stock selection
     st.sidebar.title("Stock Selection")
-    
+
     # Method selection
     selection_method = st.sidebar.radio(
         "Select stock by:",
         ["Category", "Custom Ticker"]
     )
-    
+
     if selection_method == "Category":
         # Category selection
         category = st.sidebar.selectbox(
             "Select Category",
             list(STOCK_CATEGORIES.keys())
         )
-        
+
         # Create a formatted selection for stocks in category
         stock_options = STOCK_CATEGORIES[category]
         selected_stock = st.sidebar.selectbox(
@@ -101,10 +104,10 @@ def main():
             value="AAPL",
             max_chars=5
         ).upper()
-    
+
     # Get stock info
     stock_info = get_stock_info(selected_stock)
-    
+
     if stock_info:
         # Display stock information
         st.sidebar.markdown("---")
@@ -116,7 +119,7 @@ def main():
         - Market Cap: {format_market_cap(stock_info['market_cap'])}
         - Current Price: ${stock_info['current_price']:.2f}
         """)
-    
+
     # Time period selection
     st.sidebar.markdown("---")
     st.sidebar.subheader("Time Period")
@@ -133,24 +136,25 @@ def main():
         options=list(period_options.keys())
     )
     days = period_options[selected_period]
-    
+
     # Create Spark session
     spark = create_spark_session()
-    
+
     # Main content
     tab1, tab2, tab3 = st.tabs(["Exploration", "Preprocessing", "Analysis"])
-    
+
     with tab1:
         explore_data(spark, selected_stock, days)
-    
+
     with tab2:
         preprocess_data(spark, selected_stock, days)
-    
+
     with tab3:
         analyze_data(spark, selected_stock, days)
-    
+
     # Clean up Spark session
     spark.stop()
+
 
 if __name__ == "__main__":
     main()
