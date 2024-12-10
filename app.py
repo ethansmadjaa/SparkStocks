@@ -3,43 +3,8 @@ from exploration import explore_data
 from preprocessing import preprocess_data
 from analysis import analyze_data
 from utils.spark_utils import create_spark_session
+from utils.constants import STOCK_CATEGORIES
 import yfinance as yf
-
-# Define stock categories and tickers
-STOCK_CATEGORIES = {
-    "Tech Giants": {
-        "AAPL": "Apple Inc.",
-        "MSFT": "Microsoft Corporation",
-        "GOOGL": "Alphabet Inc.",
-        "AMZN": "Amazon.com Inc.",
-        "META": "Meta Platforms Inc."
-    },
-    "Electric Vehicles": {
-        "TSLA": "Tesla Inc.",
-        "RIVN": "Rivian Automotive",
-        "NIO": "NIO Inc.",
-        "LCID": "Lucid Group Inc."
-    },
-    "Semiconductors": {
-        "NVDA": "NVIDIA Corporation",
-        "AMD": "Advanced Micro Devices",
-        "INTC": "Intel Corporation",
-        "TSM": "Taiwan Semiconductor"
-    },
-    "Financial": {
-        "JPM": "JPMorgan Chase",
-        "BAC": "Bank of America",
-        "GS": "Goldman Sachs",
-        "V": "Visa Inc."
-    },
-    "Healthcare": {
-        "JNJ": "Johnson & Johnson",
-        "PFE": "Pfizer Inc.",
-        "MRNA": "Moderna Inc.",
-        "UNH": "UnitedHealth Group"
-    }
-}
-
 
 def get_stock_info(ticker: str) -> dict:
     """Get basic stock information."""
@@ -80,14 +45,16 @@ def main():
     # Method selection
     selection_method = st.sidebar.radio(
         "Select stock by:",
-        ["Category", "Custom Ticker"]
+        ["Category", "Custom Ticker"],
+        key="main_selection_method"
     )
 
     if selection_method == "Category":
         # Category selection
         category = st.sidebar.selectbox(
             "Select Category",
-            list(STOCK_CATEGORIES.keys())
+            list(STOCK_CATEGORIES.keys()),
+            key="main_category"
         )
 
         # Create a formatted selection for stocks in category
@@ -95,14 +62,16 @@ def main():
         selected_stock = st.sidebar.selectbox(
             "Select Stock",
             list(stock_options.keys()),
-            format_func=lambda x: f"{x} - {stock_options[x]}"
+            format_func=lambda x: f"{x} - {stock_options[x]}",
+            key="main_stock"
         )
     else:
         # Custom ticker input with validation
         selected_stock = st.sidebar.text_input(
             "Enter Stock Ticker",
             value="AAPL",
-            max_chars=5
+            max_chars=5,
+            key="main_ticker"
         ).upper()
 
     # Get stock info
