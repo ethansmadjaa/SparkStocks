@@ -48,33 +48,47 @@ def get_stock_data(spark: SparkSession, ticker: str, days: int = 365) -> DataFra
 
 
 def analyze_data_frequency(df: DataFrame) -> str:
-    """Analyze the frequency of data points with optimized window operation."""
+    # This helps us understand how often we get data points
+    # For example: daily data, weekly data, etc.
+    # We figure this out by looking at the gaps between dates
+    
+    # Look at dates within each month
     window_spec = Window.orderBy("Date") \
         .partitionBy(date_trunc("month", col("Date")))
-
+    
+    # Calculate how many days between each data point
     df_with_diff = df.withColumn("date_diff",
-                                 datediff(col("Date"), lag("Date", 1).over(window_spec)))
-
+                                datediff(col("Date"), lag("Date", 1).over(window_spec)))
+    
+    # Find the most common gap between data points
     mode_freq = df_with_diff.groupBy("date_diff") \
         .count() \
         .orderBy(desc("count")) \
         .first()
-
+    
+    # Convert the number of days to a human-readable frequency
     freq_mapping = {
-        1: "Daily",
-        7: "Weekly",
-        30: "Monthly",
-        365: "Yearly"
+        1: "Daily",          # Data every day
+        7: "Weekly",         # Data every week
+        30: "Monthly",       # Data every month
+        365: "Yearly"        # Data every year
     }
     return freq_mapping.get(mode_freq["date_diff"], f"Custom ({mode_freq['date_diff']} days)")
 
 
 def calculate_basic_stats(df: DataFrame) -> DataFrame:
-    """Calculate basic statistics for numerical columns."""
+    # Get basic statistics for all our numeric columns
+    # Things like average price, highest price, lowest price, etc.
+    
+    # Find all the numeric columns in our data
     numeric_cols = [f.name for f in df.schema.fields
                     if isinstance(f.dataType, (DoubleType, LongType))]
-
-    # Create a list of expressions for the select statement
+    
+    # For each numeric column, calculate:
+    # - Mean (average)
+    # - Standard deviation (how much the values spread out)
+    # - Minimum value
+    # - Maximum value
     stats_expressions = []
     for col_name in numeric_cols:
         stats_expressions.extend([
@@ -83,153 +97,190 @@ def calculate_basic_stats(df: DataFrame) -> DataFrame:
             min(col_name).alias(f"{col_name}_min"),
             max(col_name).alias(f"{col_name}_max")
         ])
-
+    
     stats = df.select(stats_expressions)
     return stats
 
 
 def calculate_returns(df: DataFrame) -> DataFrame:
-    """Calculate daily, weekly, monthly returns with optimized window operations."""
-    # Partition by date for better performance
+    # Calculate how much money you would have made (or lost)
+    # We look at different time periods: daily, weekly, and monthly
+    
+    # Split the data by date to process it efficiently
     df = df.repartition("Date")
-
-    # Daily returns
+    
+    # Daily returns: how much the price changed within one day
     df = df.withColumn("daily_return",
                        (col("Close") - col("Open")) / col("Open") * 100)
-
-    # Weekly returns (using 5 trading days)
+    
+    # Weekly returns: how much the price changed over 5 trading days
     window_week = Window.orderBy("Date") \
         .rowsBetween(-5, 0) \
         .partitionBy(date_trunc("week", col("Date")))
-
+    
     df = df.withColumn("weekly_return",
                        ((col("Close") - first("Close").over(window_week)) /
                         first("Close").over(window_week) * 100))
-
-    # Monthly returns (using 21 trading days)
+    
+    # Monthly returns: how much the price changed over about 21 trading days
     window_month = Window.orderBy("Date") \
         .rowsBetween(-21, 0) \
         .partitionBy(date_trunc("month", col("Date")))
-
+    
     df = df.withColumn("monthly_return",
                        ((col("Close") - first("Close").over(window_month)) /
                         first("Close").over(window_month) * 100))
-
+    
     return df
 
 
 def plot_stock_price_history(df: DataFrame, ticker: str):
-    """Create an interactive candlestick chart with volume."""
-    # Convert to pandas for plotting
+    # This creates a candlestick chart - it's the classic way to view stock prices
+    # Each candle shows us 4 things:
+    # - Open price (where the box starts)
+    # - Close price (where the box ends)
+    # - High price (the line above the box)
+    # - Low price (the line below the box)
+    
+    # First, convert our Spark DataFrame to pandas for plotting
     pdf = df.toPandas()
-
-    # Create the candlestick chart with volume subplot
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
-                        vertical_spacing=0.03,
-                        subplot_titles=(f'{ticker} Stock Price', 'Volume'),
-                        row_heights=[0.7, 0.3])
-
-    fig.add_trace(go.Candlestick(x=pdf['Date'],
-                                 open=pdf['Open'],
-                                 high=pdf['High'],
-                                 low=pdf['Low'],
-                                 close=pdf['Close'],
-                                 name='OHLC'),
-                  row=1, col=1)
-
-    fig.add_trace(go.Bar(x=pdf['Date'],
-                         y=pdf['Volume'],
-                         name='Volume'),
-                  row=2, col=1)
-
+    
+    # Create a figure with two parts:
+    # 1. Price chart on top (70% of height)
+    # 2. Volume chart below (30% of height)
+    fig = make_subplots(
+        rows=2, cols=1, 
+        shared_xaxes=True,  # Both charts share the same x-axis (dates)
+        vertical_spacing=0.03,  # Small gap between charts
+        subplot_titles=(f'{ticker} Stock Price', 'Volume'),
+        row_heights=[0.7, 0.3]
+    )
+    
+    # Add the candlestick chart
+    fig.add_trace(
+        go.Candlestick(
+            x=pdf['Date'],
+            open=pdf['Open'],
+            high=pdf['High'],
+            low=pdf['Low'],
+            close=pdf['Close'],
+            name='OHLC'  # Open-High-Low-Close
+        ),
+        row=1, col=1
+    )
+    
+    # Add the volume bars below
+    fig.add_trace(
+        go.Bar(
+            x=pdf['Date'],
+            y=pdf['Volume'],
+            name='Volume'
+        ),
+        row=2, col=1
+    )
+    
+    # Make it look nice
     fig.update_layout(
         title=f'{ticker} Stock Price History',
         yaxis_title='Stock Price',
         yaxis2_title='Volume',
-        xaxis_rangeslider_visible=False,
-        height=800
+        xaxis_rangeslider_visible=False,  # Hide the range slider
+        height=800  # Make it big enough to see details
     )
-
+    
     return fig
 
 
 def plot_returns_analysis(df: DataFrame):
-    """Create comprehensive returns analysis visualizations."""
+    # This shows us how the stock's returns (profits/losses) look over time
+    # We look at daily, weekly, and monthly returns to see different patterns
+    
+    # Get just the columns we need
     pdf = df.select('Date', 'daily_return', 'weekly_return', 'monthly_return').toPandas()
-
-    # Create subplots: Returns over time and Box plots
+    
+    # Create two plots:
+    # 1. Returns over time (line chart)
+    # 2. Returns distribution (box plot)
     fig = make_subplots(
         rows=2, cols=1,
         subplot_titles=('Returns Over Time', 'Returns Distribution (Box Plot)'),
         vertical_spacing=0.15,
         row_heights=[0.7, 0.3]
     )
-
-    # Returns over time
+    
+    # Add returns over time - three lines for different timeframes
+    # Thicker lines for longer timeframes (they're usually smoother)
     fig.add_trace(
-        go.Scatter(x=pdf['Date'], y=pdf['daily_return'],
-                   name='Daily Returns', mode='lines',
-                   line=dict(color='blue', width=1)),
+        go.Scatter(
+            x=pdf['Date'], 
+            y=pdf['daily_return'],
+            name='Daily Returns', 
+            mode='lines',
+            line=dict(color='blue', width=1)  # Thin line for daily
+        ),
         row=1, col=1
     )
-
+    
     fig.add_trace(
-        go.Scatter(x=pdf['Date'], y=pdf['weekly_return'],
-                   name='Weekly Returns', mode='lines',
-                   line=dict(color='green', width=1.5)),
+        go.Scatter(
+            x=pdf['Date'], 
+            y=pdf['weekly_return'],
+            name='Weekly Returns', 
+            mode='lines',
+            line=dict(color='green', width=1.5)  # Medium line for weekly
+        ),
         row=1, col=1
     )
-
+    
     fig.add_trace(
-        go.Scatter(x=pdf['Date'], y=pdf['monthly_return'],
-                   name='Monthly Returns', mode='lines',
-                   line=dict(color='red', width=2)),
+        go.Scatter(
+            x=pdf['Date'], 
+            y=pdf['monthly_return'],
+            name='Monthly Returns', 
+            mode='lines',
+            line=dict(color='red', width=2)  # Thick line for monthly
+        ),
         row=1, col=1
     )
-
-    # Box plots for returns distribution
-    fig.add_trace(
-        go.Box(y=pdf['daily_return'], name='Daily',
-               boxpoints='outliers', jitter=0.3,
-               whiskerwidth=0.2, marker_color='blue',
-               line_width=1),
-        row=2, col=1
-    )
-
-    fig.add_trace(
-        go.Box(y=pdf['weekly_return'], name='Weekly',
-               boxpoints='outliers', jitter=0.3,
-               whiskerwidth=0.2, marker_color='green',
-               line_width=1),
-        row=2, col=1
-    )
-
-    fig.add_trace(
-        go.Box(y=pdf['monthly_return'], name='Monthly',
-               boxpoints='outliers', jitter=0.3,
-               whiskerwidth=0.2, marker_color='red',
-               line_width=1),
-        row=2, col=1
-    )
-
-    # Update layout
+    
+    # Add box plots to show the distribution of returns
+    # This helps us see:
+    # - Typical return ranges (the boxes)
+    # - Unusual returns (the dots outside the whiskers)
+    # - If returns are symmetric (box centered around 0)
+    colors = ['blue', 'green', 'red']
+    for return_type, color in zip(['daily_return', 'weekly_return', 'monthly_return'], colors):
+        fig.add_trace(
+            go.Box(
+                y=pdf[return_type],
+                name=return_type.split('_')[0].capitalize(),
+                boxpoints='outliers',  # Show points outside whiskers
+                jitter=0.3,  # Spread out the outlier points
+                whiskerwidth=0.2,
+                marker_color=color,
+                line_width=1
+            ),
+            row=2, col=1
+        )
+    
+    # Make it look nice
     fig.update_layout(
         height=800,
         showlegend=True,
         legend=dict(
-            orientation="h",
+            orientation="h",  # Horizontal legend
             yanchor="bottom",
             y=1.02,
             xanchor="right",
             x=1
         )
     )
-
-    # Update axes
+    
+    # Label the axes
     fig.update_yaxes(title_text="Return (%)", row=1, col=1)
     fig.update_yaxes(title_text="Return (%)", row=2, col=1)
     fig.update_xaxes(title_text="Date", row=1, col=1)
-
+    
     return fig
 
 
@@ -311,149 +362,141 @@ def plot_moving_averages(df: DataFrame, ticker: str, column_name: str, ma_period
 
 
 def analyze_ma_signals(df: DataFrame, short_period: int = 5, long_period: int = 20) -> DataFrame:
-    """
-    Analyze moving average crossovers to generate trading signals.
+    # This function looks for trading signals based on moving average crossovers
+    # We use two moving averages:
+    # - Short period (default 5 days) for quick reactions to price changes
+    # - Long period (default 20 days) for identifying the overall trend
     
-    Trading Signal Logic:
-    1. Golden Cross (Strong Buy): When short MA crosses above long MA
-    2. Death Cross (Strong Sell): When short MA crosses below long MA
-    3. Bullish: When short MA is above long MA
-    4. Bearish: When short MA is below long MA
+    # First, calculate both moving averages if they don't exist
+    if f"Close_MA_{short_period}" not in df.columns:
+        df = calculate_moving_average(df, "Close", short_period)
+    if f"Close_MA_{long_period}" not in df.columns:
+        df = calculate_moving_average(df, "Close", long_period)
     
-    Args:
-        df: DataFrame with price data and MAs
-        short_period: Period for shorter MA (default: 5 days)
-        long_period: Period for longer MA (default: 20 days)
-    """
-    # Calculate the difference between short and long MA
-    signal_col = f"Close_MA_{short_period}_vs_{long_period}"
-    df = df.withColumn(signal_col,
-                       col(f"Close_MA_{short_period}") - col(f"Close_MA_{long_period}"))
-
-    # Create a window spec for looking at previous value
-    window_spec = Window.orderBy("Date").rowsBetween(-1, 0)
-
-    # Detect crossovers by comparing current and previous signals
-    df = df.withColumn("prev_signal",
-                       lag(signal_col, 1).over(Window.orderBy("Date")))
-
-    # Generate trading signals based on crossovers
-    df = df.withColumn("signal",
-                       when((col(signal_col) > 0) & (col("prev_signal") < 0),
-                            "Golden Cross (Buy)")  # Short MA crosses above Long MA
-                       .when((col(signal_col) < 0) & (col("prev_signal") > 0),
-                             "Death Cross (Sell)")  # Short MA crosses below Long MA
-                       .when(col(signal_col) > 0, "Bullish")  # Short MA above Long MA
-                       .when(col(signal_col) < 0, "Bearish")  # Short MA below Long MA
-                       .otherwise("Neutral"))
-
+    # Look for crossovers
+    # Golden Cross: Short MA crosses above Long MA (bullish signal)
+    # Death Cross: Short MA crosses below Long MA (bearish signal)
+    df = df.withColumn(
+        "signal",
+        when(
+            (col(f"Close_MA_{short_period}") > col(f"Close_MA_{long_period}")) &
+            (lag(f"Close_MA_{short_period}", 1).over(Window.orderBy("Date")) <= 
+             lag(f"Close_MA_{long_period}", 1).over(Window.orderBy("Date"))),
+            "Golden Cross (Buy)"
+        ).when(
+            (col(f"Close_MA_{short_period}") < col(f"Close_MA_{long_period}")) &
+            (lag(f"Close_MA_{short_period}", 1).over(Window.orderBy("Date")) >= 
+             lag(f"Close_MA_{long_period}", 1).over(Window.orderBy("Date"))),
+            "Death Cross (Sell)"
+        ).otherwise("No Signal")
+    )
+    
     return df
 
 
-def calculate_stock_correlation(spark: SparkSession, ticker1: str, ticker2: str, days: int = 365) -> dict:
-    """Calculate correlation between two stocks across different metrics."""
+def calculate_stock_correlation(spark: SparkSession, ticker1: str, ticker2: str, days: int) -> dict:
+    # This helps us see how two stocks move together
+    # High correlation means they tend to move in the same direction
+    # Low or negative correlation means they move independently or oppositely
+    
     # Get data for both stocks
     df1 = get_stock_data(spark, ticker1, days)
     df2 = get_stock_data(spark, ticker2, days)
     
-    # Rename columns in both dataframes before joining to avoid ambiguity
-    df1_renamed = df1.select(
-        col("Date"),
-        col("Close").alias(f"Close_{ticker1}"),
-        col("Volume").alias(f"Volume_{ticker1}"),
-        col("Open").alias(f"Open_{ticker1}"),
-        col("High").alias(f"High_{ticker1}"),
-        col("Low").alias(f"Low_{ticker1}")
+    # Join the dataframes on date to align the prices
+    df_joined = df1.join(
+        df2,
+        on="Date",
+        how="inner"  # Only keep dates where we have data for both stocks
+    ).select(
+        df1["Date"],
+        df1["Close"].alias("close1"),
+        df2["Close"].alias("close2"),
+        df1["Volume"].alias("volume1"),
+        df2["Volume"].alias("volume2"),
+        df1["High"].alias("high1"),
+        df2["High"].alias("high2"),
+        df1["Low"].alias("low1"),
+        df2["Low"].alias("low2")
     )
-    
-    df2_renamed = df2.select(
-        col("Date"),
-        col("Close").alias(f"Close_{ticker2}"),
-        col("Volume").alias(f"Volume_{ticker2}"),
-        col("Open").alias(f"Open_{ticker2}"),
-        col("High").alias(f"High_{ticker2}"),
-        col("Low").alias(f"Low_{ticker2}")
-    )
-    
-    # Join dataframes on date
-    joined_df = df1_renamed.join(df2_renamed, on="Date", how="inner")
     
     # Calculate correlations for different metrics
-    metrics = ["Close", "Volume", "Open", "High", "Low"]
-    correlations = {}
+    correlations = df_joined.select(
+        corr("close1", "close2").alias("Close"),
+        corr("volume1", "volume2").alias("Volume"),
+        corr("high1", "high2").alias("High"),
+        corr("low1", "low2").alias("Low")
+    ).first()
     
-    for metric in metrics:
-        # Use explicit column names in correlation calculation
-        col1 = f"{metric}_{ticker1}"
-        col2 = f"{metric}_{ticker2}"
-        
-        correlation = joined_df.select(
-            expr(f"corr({col1}, {col2})")
-        ).first()[0]
-        
-        correlations[metric] = correlation if correlation is not None else 0.0
-    
-    return correlations
+    return {
+        "Close": correlations["Close"] or 0,  # Handle None values
+        "Volume": correlations["Volume"] or 0,
+        "High": correlations["High"] or 0,
+        "Low": correlations["Low"] or 0
+    }
 
 
 def plot_correlation_comparison(df1: DataFrame, df2: DataFrame, ticker1: str, ticker2: str):
-    """Create visualization comparing two stocks."""
-    # Convert to pandas for plotting
+    # This shows how two stocks move relative to each other
+    # We normalize the prices to start at 100 to make comparison easier
+    
+    # Convert both dataframes to pandas
     pdf1 = df1.select("Date", "Close").toPandas()
     pdf2 = df2.select("Date", "Close").toPandas()
     
-    # Normalize prices for comparison
+    # Normalize prices to start at 100
     pdf1["Normalized"] = pdf1["Close"] / pdf1["Close"].iloc[0] * 100
     pdf2["Normalized"] = pdf2["Close"] / pdf2["Close"].iloc[0] * 100
     
-    # Create figure
-    fig = make_subplots(rows=2, cols=1,
-                        subplot_titles=("Price Comparison (Normalized)", "Price Movement Correlation"),
-                        vertical_spacing=0.15,
-                        row_heights=[0.7, 0.3])
+    # Create the comparison plot
+    fig = go.Figure()
     
-    # Add normalized price lines
+    # Add line for first stock
     fig.add_trace(
-        go.Scatter(x=pdf1["Date"], y=pdf1["Normalized"],
-                   name=f"{ticker1}", line=dict(color="blue")),
-        row=1, col=1
+        go.Scatter(
+            x=pdf1["Date"],
+            y=pdf1["Normalized"],
+            name=ticker1,
+            line=dict(color='blue', width=2)
+        )
     )
     
+    # Add line for second stock
     fig.add_trace(
-        go.Scatter(x=pdf2["Date"], y=pdf2["Normalized"],
-                   name=f"{ticker2}", line=dict(color="red")),
-        row=1, col=1
+        go.Scatter(
+            x=pdf2["Date"],
+            y=pdf2["Normalized"],
+            name=ticker2,
+            line=dict(color='red', width=2)
+        )
     )
     
-    # Add scatter plot for correlation
-    fig.add_trace(
-        go.Scatter(x=pdf1["Close"], y=pdf2["Close"],
-                   mode="markers", name="Price Correlation",
-                   marker=dict(color="green", size=6, opacity=0.5)),
-        row=2, col=1
-    )
-    
-    # Update layout
+    # Make it look nice
     fig.update_layout(
-        height=800,
+        title=f"Price Comparison: {ticker1} vs {ticker2} (Normalized to 100)",
+        xaxis_title="Date",
+        yaxis_title="Normalized Price",
+        height=500,
         showlegend=True,
-        title_text=f"Stock Comparison: {ticker1} vs {ticker2}"
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1
+        )
     )
-    
-    # Update axes
-    fig.update_yaxes(title_text="Normalized Price (%)", row=1, col=1)
-    fig.update_yaxes(title_text=f"{ticker2} Price ($)", row=2, col=1)
-    fig.update_xaxes(title_text="Date", row=1, col=1)
-    fig.update_xaxes(title_text=f"{ticker1} Price ($)", row=2, col=1)
     
     return fig
 
 
 def calculate_volatility_metrics(df: DataFrame) -> DataFrame:
-    """Calculate various volatility metrics."""
+    # This helps us understand how much and how quickly prices change
+    # Higher volatility means more risk but also more potential profit
+    
     window_daily = Window.orderBy("Date").rowsBetween(-1, 0)
     
-    # Daily price changes and volatility metrics
+    # Calculate daily price changes and volatility metrics
     df_vol = df.withColumn(
         "daily_change", 
         ((col("Close") - lag("Close", 1).over(Window.orderBy("Date"))) / 
@@ -461,9 +504,9 @@ def calculate_volatility_metrics(df: DataFrame) -> DataFrame:
     ).withColumn(
         "true_range",
         greatest(
-            col("High") - col("Low"),
-            spark_abs(col("High") - lag("Close", 1).over(Window.orderBy("Date"))),
-            spark_abs(col("Low") - lag("Close", 1).over(Window.orderBy("Date")))
+            col("High") - col("Low"),  # Current day's range
+            spark_abs(col("High") - lag("Close", 1).over(Window.orderBy("Date"))),  # Yesterday's close to today's high
+            spark_abs(col("Low") - lag("Close", 1).over(Window.orderBy("Date")))   # Yesterday's close to today's low
         )
     )
     
