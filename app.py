@@ -1,13 +1,14 @@
 # This is our main app file - it handles the UI and brings all the analysis pieces together
+from datetime import datetime
+
 import streamlit as st
+import yfinance as yf
+
+from analysis import analyze_data
 from exploration import explore_data
 from preprocessing import preprocess_data
-from analysis import analyze_data
-from utils.spark_utils import create_spark_session
 from utils.constants import STOCK_CATEGORIES
-import yfinance as yf
-from datetime import datetime, timedelta
-import json
+from utils.spark_utils import create_spark_session
 
 
 def get_ytd_days():
