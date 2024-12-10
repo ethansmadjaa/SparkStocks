@@ -1,3 +1,5 @@
+# This is where we do all the technical analysis stuff
+# We calculate things like RSI, MACD, and Bollinger Bands to help understand stock movements
 from pyspark.sql import DataFrame, SparkSession
 import streamlit as st
 from pyspark.sql.functions import *
@@ -7,31 +9,44 @@ from exploration import get_stock_data
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+
 def calculate_rsi(df: DataFrame, period: int = 14) -> DataFrame:
-    """Calculate Relative Strength Index."""
-    # Calculate price changes
+    # RSI (Relative Strength Index) tells us if a stock is overbought or oversold
+    # It looks at the last 14 days by default and gives us a number between 0 and 100
+    # Above 70 means probably overbought (might go down soon)
+    # Below 30 means probably oversold (might go up soon)
+    
+    # First, we need to see how much the price changed each day
     window_spec = Window.orderBy("Date")
     df = df.withColumn("price_change", 
                       col("Close") - lag("Close", 1).over(window_spec))
     
-    # Calculate gains (positive changes) and losses (negative changes)
+    # Split these changes into gains and losses
+    # If price went up, it's a gain. If it went down, it's a loss
     df = df.withColumn("gain", when(col("price_change") > 0, col("price_change")).otherwise(0))
     df = df.withColumn("loss", when(col("price_change") < 0, -col("price_change")).otherwise(0))
     
-    # Calculate average gains and losses
+    # Now we average these gains and losses over our period (usually 14 days)
     window_avg = Window.orderBy("Date").rowsBetween(-period, 0)
     df = df.withColumn("avg_gain", avg("gain").over(window_avg))
     df = df.withColumn("avg_loss", avg("loss").over(window_avg))
     
-    # Calculate RSI
+    # Finally, calculate RSI using the formula: 100 - (100 / (1 + RS))
+    # where RS = average gain / average loss
     df = df.withColumn("rs", col("avg_gain") / col("avg_loss"))
     df = df.withColumn("rsi", 100 - (100 / (1 + col("rs"))))
     
     return df
 
+
 def calculate_macd(df: DataFrame, fast_period: int = 12, slow_period: int = 26, signal_period: int = 9) -> DataFrame:
-    """Calculate MACD (Moving Average Convergence Divergence)."""
-    # Calculate EMAs
+    # MACD helps us spot changes in the trend and momentum of a stock
+    # It uses three periods: fast (12 days), slow (26 days), and signal (9 days)
+    # When the MACD line crosses above the signal line, it might be time to buy
+    # When it crosses below, it might be time to sell
+    
+    # Calculate exponential moving averages (EMAs)
+    # We use exp and log to handle the exponential part
     df = df.withColumn(
         f"ema_{fast_period}",
         exp(avg(log("Close")).over(Window.orderBy("Date").rowsBetween(-fast_period, 0)))
@@ -42,40 +57,48 @@ def calculate_macd(df: DataFrame, fast_period: int = 12, slow_period: int = 26, 
         exp(avg(log("Close")).over(Window.orderBy("Date").rowsBetween(-slow_period, 0)))
     )
     
-    # Calculate MACD line
+    # MACD line is the difference between fast and slow EMAs
     df = df.withColumn("macd_line", 
                       col(f"ema_{fast_period}") - col(f"ema_{slow_period}"))
     
-    # Calculate Signal line
+    # Signal line is a 9-day EMA of the MACD line
     df = df.withColumn(
         "signal_line",
         exp(avg(log("macd_line")).over(Window.orderBy("Date").rowsBetween(-signal_period, 0)))
     )
     
-    # Calculate MACD histogram
+    # The histogram shows the difference between MACD and signal lines
+    # This helps us see momentum changes more clearly
     df = df.withColumn("macd_histogram", 
                       col("macd_line") - col("signal_line"))
     
     return df
 
+
 def calculate_bollinger_bands(df: DataFrame, period: int = 20, std_dev: float = 2.0) -> DataFrame:
-    """Calculate Bollinger Bands."""
+    # Bollinger Bands show us the volatility and potential price levels to watch
+    # They're like a price channel that gets wider when volatility is high
+    # and narrower when volatility is low
+    
+    # We look at a 20-day period by default
     window_spec = Window.orderBy("Date").rowsBetween(-period, 0)
     
-    # Calculate middle band (20-day SMA)
+    # Middle band is just a simple moving average
     df = df.withColumn("bb_middle", avg("Close").over(window_spec))
     
-    # Calculate standard deviation
+    # Calculate how much prices typically deviate from the average
     df = df.withColumn("bb_std", 
                       stddev("Close").over(window_spec))
     
-    # Calculate upper and lower bands
+    # Upper and lower bands are 2 standard deviations from the middle
+    # This means about 95% of prices should fall between these bands
     df = df.withColumn("bb_upper", 
                       col("bb_middle") + (col("bb_std") * std_dev))
     df = df.withColumn("bb_lower", 
                       col("bb_middle") - (col("bb_std") * std_dev))
     
     return df
+
 
 def plot_technical_indicators(df: DataFrame, ticker: str):
     """Create visualization for technical indicators."""
@@ -134,6 +157,7 @@ def plot_technical_indicators(df: DataFrame, ticker: str):
     )
     
     return fig
+
 
 def preprocess_data(spark: SparkSession, ticker: str, days: int = 365):
     """Main function for preprocessing."""
