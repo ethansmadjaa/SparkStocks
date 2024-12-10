@@ -7,7 +7,7 @@ from pyspark.sql import SparkSession
 from pyspark.sql.functions import *
 from pyspark.sql.window import Window
 
-from exploration import get_stock_data
+from utils.data_utils import get_stock_data
 
 
 def calculate_rsi(df: DataFrame, period: int = 14) -> DataFrame:
@@ -16,8 +16,13 @@ def calculate_rsi(df: DataFrame, period: int = 14) -> DataFrame:
     # Above 70 means probably overbought (might go down soon)
     # Below 30 means probably oversold (might go up soon)
     
-    # First, we need to see how much the price changed each day
-    window_spec = Window.orderBy("Date")
+    # Add partitioning by year and month for better performance
+    df = df.withColumn("year", year("Date"))
+    df = df.withColumn("month", month("Date"))
+    
+    # Define window spec with partitioning
+    window_spec = Window.partitionBy("year", "month").orderBy("Date")
+    
     df = df.withColumn("price_change", 
                       col("Close") - lag("Close", 1).over(window_spec))
     
@@ -27,7 +32,9 @@ def calculate_rsi(df: DataFrame, period: int = 14) -> DataFrame:
     df = df.withColumn("loss", when(col("price_change") < 0, -col("price_change")).otherwise(0))
     
     # Now we average these gains and losses over our period (usually 14 days)
-    window_avg = Window.orderBy("Date").rowsBetween(-period, 0)
+    window_avg = Window.partitionBy("year", "month") \
+                      .orderBy("Date") \
+                      .rowsBetween(-period, 0)
     df = df.withColumn("avg_gain", avg("gain").over(window_avg))
     df = df.withColumn("avg_loss", avg("loss").over(window_avg))
     
@@ -36,7 +43,8 @@ def calculate_rsi(df: DataFrame, period: int = 14) -> DataFrame:
     df = df.withColumn("rs", col("avg_gain") / col("avg_loss"))
     df = df.withColumn("rsi", 100 - (100 / (1 + col("rs"))))
     
-    return df
+    # Drop the partitioning columns at the end
+    return df.drop("year", "month")
 
 
 def calculate_macd(df: DataFrame, fast_period: int = 12, slow_period: int = 26, signal_period: int = 9) -> DataFrame:
@@ -45,34 +53,54 @@ def calculate_macd(df: DataFrame, fast_period: int = 12, slow_period: int = 26, 
     # When the MACD line crosses above the signal line, it might be time to buy
     # When it crosses below, it might be time to sell
     
-    # Calculate exponential moving averages (EMAs)
-    # We use exp and log to handle the exponential part
+    # Add partitioning like we did for RSI
+    df = df.withColumn("year", year("Date"))
+    df = df.withColumn("month", month("Date"))
+    
+    window_spec = Window.partitionBy("year", "month").orderBy("Date")
+    
+    # Calculate EMAs with null handling
     df = df.withColumn(
         f"ema_{fast_period}",
-        exp(avg(log("Close")).over(Window.orderBy("Date").rowsBetween(-fast_period, 0)))
+        coalesce(
+            exp(avg(log("Close")).over(window_spec.rowsBetween(-fast_period, 0))),
+            col("Close")
+        )
     )
     
     df = df.withColumn(
         f"ema_{slow_period}",
-        exp(avg(log("Close")).over(Window.orderBy("Date").rowsBetween(-slow_period, 0)))
+        coalesce(
+            exp(avg(log("Close")).over(window_spec.rowsBetween(-slow_period, 0))),
+            col("Close")
+        )
     )
     
-    # MACD line is the difference between fast and slow EMAs
+    # MACD line with null handling
     df = df.withColumn("macd_line", 
-                      col(f"ema_{fast_period}") - col(f"ema_{slow_period}"))
+                      coalesce(
+                          col(f"ema_{fast_period}") - col(f"ema_{slow_period}"),
+                          lit(0.0)
+                      ))
     
-    # Signal line is a 9-day EMA of the MACD line
+    # Signal line with null handling
     df = df.withColumn(
         "signal_line",
-        exp(avg(log("macd_line")).over(Window.orderBy("Date").rowsBetween(-signal_period, 0)))
+        coalesce(
+            exp(avg(log(abs(col("macd_line")) + 0.00001)).over(window_spec.rowsBetween(-signal_period, 0))),
+            col("macd_line")
+        )
     )
     
-    # The histogram shows the difference between MACD and signal lines
-    # This helps us see momentum changes more clearly
+    # Histogram with null handling
     df = df.withColumn("macd_histogram", 
-                      col("macd_line") - col("signal_line"))
+                      coalesce(
+                          col("macd_line") - col("signal_line"),
+                          lit(0.0)
+                      ))
     
-    return df
+    # Drop the partitioning columns
+    return df.drop("year", "month")
 
 
 def calculate_bollinger_bands(df: DataFrame, period: int = 20, std_dev: float = 2.0) -> DataFrame:
@@ -98,6 +126,116 @@ def calculate_bollinger_bands(df: DataFrame, period: int = 20, std_dev: float = 
                       col("bb_middle") - (col("bb_std") * std_dev))
     
     return df
+
+
+def calculate_trading_signals(df: DataFrame) -> DataFrame:
+    """Calculate trading signals and market sentiment"""
+    
+    # Add partitioning for better performance
+    df = df.withColumn("year", year("Date"))
+    df = df.withColumn("month", month("Date"))
+    window_spec = Window.partitionBy("year", "month").orderBy("Date")
+    
+    # Calculate moving averages for different periods
+    for period in [5, 10, 20, 50, 200]:
+        df = df.withColumn(
+            f"ma_{period}",
+            avg("Close").over(window_spec.rowsBetween(-period, 0))
+        )
+    
+    # Calculate signals with weighted importance
+    df = df.withColumn(
+        "signal_short_term",
+        when(col("Close") > col("ma_10"), 2)  # More weight to short-term
+        .when(col("Close") < col("ma_10"), -2)
+        .otherwise(0)
+    )
+    
+    df = df.withColumn(
+        "signal_medium_term",
+        when(col("Close") > col("ma_50"), 1.5)
+        .when(col("Close") < col("ma_50"), -1.5)
+        .otherwise(0)
+    )
+    
+    df = df.withColumn(
+        "signal_long_term",
+        when(col("Close") > col("ma_200"), 1)
+        .when(col("Close") < col("ma_200"), -1)
+        .otherwise(0)
+    )
+    
+    # Calculate momentum
+    df = df.withColumn(
+        "price_momentum",
+        when(col("Close") > lag("Close", 1).over(window_spec), 1)
+        .when(col("Close") < lag("Close", 1).over(window_spec), -1)
+        .otherwise(0)
+    )
+    
+    # Calculate RSI signal with more granular levels
+    df = df.withColumn(
+        "signal_rsi",
+        when(col("rsi") < 30, 2)  # Strong oversold
+        .when(col("rsi") < 40, 1)  # Moderately oversold
+        .when(col("rsi") > 70, -2)  # Strong overbought
+        .when(col("rsi") > 60, -1)  # Moderately overbought
+        .otherwise(0)
+    )
+    
+    # Calculate MACD signal with trend strength
+    df = df.withColumn(
+        "signal_macd",
+        when((col("macd_line") > col("signal_line")) & 
+             (col("macd_histogram") > lag("macd_histogram", 1).over(window_spec)), 2)  # Strong bullish
+        .when(col("macd_line") > col("signal_line"), 1)  # Bullish
+        .when((col("macd_line") < col("signal_line")) & 
+              (col("macd_histogram") < lag("macd_histogram", 1).over(window_spec)), -2)  # Strong bearish
+        .when(col("macd_line") < col("signal_line"), -1)  # Bearish
+        .otherwise(0)
+    )
+    
+    # Volume trend
+    df = df.withColumn(
+        "volume_trend",
+        when((col("Volume") > lag("Volume", 1).over(window_spec)) & 
+             (col("Close") > lag("Close", 1).over(window_spec)), 1)  # Up volume
+        .when((col("Volume") > lag("Volume", 1).over(window_spec)) & 
+              (col("Close") < lag("Close", 1).over(window_spec)), -1)  # Down volume
+        .otherwise(0)
+    )
+    
+    # Calculate overall sentiment with weighted signals
+    df = df.withColumn(
+        "total_signals",
+        col("signal_short_term") +  # Weight: 2
+        col("signal_medium_term") +  # Weight: 1.5
+        col("signal_long_term") +    # Weight: 1
+        col("signal_rsi") +          # Weight: 2
+        col("signal_macd") +         # Weight: 2
+        col("price_momentum") +      # Weight: 1
+        col("volume_trend")          # Weight: 1
+    )
+    
+    # Calculate sentiment strength (normalize between 0 and 1)
+    max_possible_score = 10.5  # Sum of all positive weights
+    df = df.withColumn(
+        "sentiment_strength",
+        (col("total_signals") + max_possible_score) / (2 * max_possible_score)  # Normalize to [0,1]
+    )
+    
+    # More nuanced sentiment classification
+    df = df.withColumn(
+        "sentiment",
+        when(col("total_signals") > 3, "Strongly Bullish")
+        .when(col("total_signals") > 0, "Bullish")
+        .when(col("total_signals") < -3, "Strongly Bearish")
+        .when(col("total_signals") < 0, "Bearish")
+        .otherwise("Neutral")
+    )
+    
+    # Drop partitioning columns and temporary columns
+    return df.drop("year", "month", "price_momentum", "volume_trend")
 
 
 def plot_technical_indicators(df: DataFrame, ticker: str):
@@ -163,17 +301,51 @@ def preprocess_data(spark: SparkSession, ticker: str, days: int = 365):
     """Main function for preprocessing."""
     st.subheader(f"📊 Advanced Technical Analysis for {ticker}")
     
-    # Get stock data
+    # Get stock data and calculate all indicators
     df = get_stock_data(spark, ticker, days)
-    
-    # Calculate technical indicators
     df = calculate_rsi(df)
     df = calculate_macd(df)
     df = calculate_bollinger_bands(df)
+    df = calculate_trading_signals(df)
     
     # Display technical analysis dashboard
     fig = plot_technical_indicators(df, ticker)
     st.plotly_chart(fig, use_container_width=True)
+    
+    # Get latest values for analysis
+    latest = df.orderBy(desc("Date")).first()
+    
+    # Trading Signals Analysis
+    st.write("### Trading Signals Analysis")
+    
+    sentiment = latest["sentiment"]
+    strength = latest["sentiment_strength"]
+    
+    # Create a more detailed analysis message
+    analysis_message = f"""
+    #### Overall Market Sentiment: {sentiment} (Strength: {strength:.1%})
+    
+    Current Signals for {ticker}:
+    - Short-term trend (10-day MA): {"Bullish" if latest["signal_short_term"] > 0 else "Bearish"}
+    - Medium-term trend (50-day MA): {"Bullish" if latest["signal_medium_term"] > 0 else "Bearish"}
+    - Long-term trend (200-day MA): {"Bullish" if latest["signal_long_term"] > 0 else "Bearish"}
+    - RSI Signal: {"Oversold (Bullish)" if latest["signal_rsi"] > 0 else "Overbought (Bearish)" if latest["signal_rsi"] < 0 else "Neutral"}
+    - MACD Signal: {"Bullish" if latest["signal_macd"] > 0 else "Bearish"}
+    
+    Price is currently:
+    - {"Above" if latest["Close"] > latest["ma_200"] else "Below"} 200-day moving average
+    - {"Above" if latest["Close"] > latest["ma_50"] else "Below"} 50-day moving average
+    - {"Above" if latest["Close"] > latest["ma_10"] else "Below"} 10-day moving average
+    
+    Always combine this technical analysis with fundamental research before making investment decisions.
+    """
+    
+    if sentiment == "Bullish":
+        st.success(analysis_message)
+    elif sentiment == "Bearish":
+        st.error(analysis_message)
+    else:
+        st.info(analysis_message)
     
     # Technical Indicators Interpretation
     st.write("### Technical Indicators Analysis")
@@ -197,20 +369,22 @@ def preprocess_data(spark: SparkSession, ticker: str, days: int = 365):
     
     # MACD Analysis
     st.write("#### MACD Analysis")
-    macd_signal = "Bullish" if latest["macd_line"] > latest["signal_line"] else "Bearish"
+    macd_value = float(latest["macd_line"] or 0.0)
+    signal_value = float(latest["signal_line"] or 0.0)
+    macd_signal = "Bullish" if macd_value > signal_value else "Bearish"
     
     col1, col2 = st.columns(2)
     with col1:
         st.metric(
             "MACD Line",
-            f"{latest['macd_line']:.2f}",
+            f"{macd_value:.2f}",
             delta=macd_signal,
             delta_color="off"
         )
     with col2:
         st.metric(
             "Signal Line",
-            f"{latest['signal_line']:.2f}"
+            f"{signal_value:.2f}"
         )
     
     # Bollinger Bands Analysis
