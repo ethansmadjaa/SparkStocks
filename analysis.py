@@ -9,7 +9,12 @@ from pyspark.sql import SparkSession
 from pyspark.sql.functions import *
 from pyspark.sql.window import Window
 
-from exploration import get_stock_data
+from utils.data_utils import get_stock_data
+from utils.preprocessing_utils import (
+    calculate_rsi,
+    calculate_macd,
+    calculate_trading_signals
+)
 
 
 def analyze_data(spark: SparkSession, ticker: str, days: int) -> None:
@@ -23,8 +28,11 @@ def analyze_data(spark: SparkSession, ticker: str, days: int) -> None:
     """
     st.header(f"Analysis for {ticker}")
 
-    # Get the stock data
+    # Get the stock data with all indicators
     df = get_stock_data(spark, ticker, days)
+    df = calculate_rsi(df)
+    df = calculate_macd(df)
+    df = calculate_trading_signals(df)
 
     # Create tabs for different types of analysis
     sentiment_tab, seasonal_tab, trend_tab = st.tabs([
@@ -134,7 +142,112 @@ def analyze_data(spark: SparkSession, ticker: str, days: int) -> None:
     with trend_tab:
         trend_results = analyze_trend_strength(df)
         trend_pdf = trend_results.toPandas()
-        st.write("Trend Analysis Results:", trend_pdf)
+        
+        # Create trend visualization
+        fig = make_subplots(rows=2, cols=1,
+                           shared_xaxes=True,
+                           subplot_titles=('ADX Trend Strength', 'Directional Indicators'),
+                           vertical_spacing=0.15,
+                           row_heights=[0.6, 0.4])
+
+        # Plot ADX line
+        fig.add_trace(
+            go.Scatter(
+                x=trend_pdf['Date'],
+                y=trend_pdf['adx'],
+                name='ADX',
+                line=dict(color='purple', width=2)
+            ),
+            row=1, col=1
+        )
+
+        # Add threshold lines for ADX
+        fig.add_hline(y=25, line_dash="dash", line_color="red", 
+                     annotation_text="Strong Trend", row=1, col=1)
+        fig.add_hline(y=15, line_dash="dash", line_color="orange", 
+                     annotation_text="Weak Trend", row=1, col=1)
+
+        # Plot +DI and -DI lines
+        fig.add_trace(
+            go.Scatter(
+                x=trend_pdf['Date'],
+                y=trend_pdf['plus_di'],
+                name='+DI',
+                line=dict(color='green', width=1.5)
+            ),
+            row=2, col=1
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=trend_pdf['Date'],
+                y=trend_pdf['minus_di'],
+                name='-DI',
+                line=dict(color='red', width=1.5)
+            ),
+            row=2, col=1
+        )
+
+        # Update layout
+        fig.update_layout(
+            height=800,
+            title_text=f"Trend Analysis for {ticker}",
+            showlegend=True,
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1
+            )
+        )
+
+        # Add y-axis titles
+        fig.update_yaxes(title_text="ADX Value", row=1, col=1)
+        fig.update_yaxes(title_text="DI Values", row=2, col=1)
+
+        # Display the plot
+        st.plotly_chart(fig, use_container_width=True)
+
+        # Add trend interpretation
+        st.write("### Trend Interpretation")
+        latest = trend_pdf.iloc[-1]
+        
+        # Create columns for metrics
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.metric(
+                "Current ADX",
+                f"{latest['adx']:.1f}",
+                delta=latest['trend_strength'],
+                help="Average Directional Index - Measures trend strength"
+            )
+        
+        with col2:
+            st.metric(
+                "+DI",
+                f"{latest['plus_di']:.1f}",
+                help="Positive Directional Indicator"
+            )
+        
+        with col3:
+            st.metric(
+                "-DI",
+                f"{latest['minus_di']:.1f}",
+                help="Negative Directional Indicator"
+            )
+
+        # Add trend explanation
+        st.write(f"""
+        #### Current Trend Analysis:
+        - Trend Strength: **{latest['trend_strength']}**
+        - Direction: **{latest['trend_direction']}**
+        
+        > ADX above 25 indicates a strong trend, while below 15 indicates a weak trend.
+        > When +DI is above -DI, the trend is bullish; when -DI is above +DI, the trend is bearish.
+        """)
+
+    return df  # Return the processed DataFrame
 
 
 def analyze_seasonality(df: DataFrame) -> DataFrame:
