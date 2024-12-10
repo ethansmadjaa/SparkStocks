@@ -41,7 +41,6 @@ def main():
         # Time period selection
         st.subheader("Select Time Period")
         period_options = {
-            "1 day": 1,
             "1 Month": 30,
             "6 Months": 180,
             "Year to Date": "ytd",
