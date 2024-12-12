@@ -16,17 +16,28 @@ from utils.preprocessing_utils import (
     calculate_trading_signals
 )
 
+def analyze_data(spark: SparkSession, ticker: str, days: int = 365):
+    """
+    Perform deep analysis of stock patterns and predictions.
+    """
+    st.write("## Advanced Stock Analysis")
 
-def analyze_data(spark: SparkSession, ticker: str, days: int) -> None:
-    """
-    Perform and display comprehensive stock analysis including market sentiment.
-    
-    Args:
-        spark: SparkSession instance
-        ticker: Stock ticker symbol
-        days: Number of days to analyze
-    """
-    st.header(f"Analysis for {ticker}")
+    # Analysis Methods Explanation
+    with st.expander("Understanding Analysis Methods"):
+        st.write("""
+        ### Analysis Techniques Guide
+        
+        #### Price Analysis
+        - **Support Levels**: Price levels where buying pressure typically increases
+        - **Resistance Levels**: Price levels where selling pressure typically increases
+        - **Price Patterns**: Recurring price movements that may indicate future direction
+        
+        #### Volume Analysis
+        Understanding trading activity:
+        - **Volume Trends**: Shows market interest and participation
+        - **Volume Confirmation**: Higher volume validates price movements
+        - **Volume Divergence**: When volume doesn't confirm price movement
+        """)
 
     # Get the stock data with all indicators
     df = get_stock_data(spark, ticker, days)
@@ -35,37 +46,35 @@ def analyze_data(spark: SparkSession, ticker: str, days: int) -> None:
     df = calculate_trading_signals(df)
 
     # Create tabs for different types of analysis
-    sentiment_tab, seasonal_tab, trend_tab = st.tabs([
-        "Market Sentiment", "Seasonality", "Trend Analysis"
+    sentiment_tab, seasonal_tab = st.tabs([
+        "Market Sentiment", "Seasonality Analysis"
     ])
 
     with sentiment_tab:
         st.subheader("Overall Market Sentiment")
 
-        # Calculate daily returns more efficiently
+        # Calculate daily returns
         window_spec = Window.orderBy("Date").partitionBy()
         df = df.withColumn(
             "daily_return",
             ((col("Close") - lag("Close", 1).over(window_spec)) / lag("Close", 1).over(window_spec)) * 100
         ).cache()
 
-        # Convert to pandas for efficient calculations
+        # Convert to pandas for calculations
         pdf = df.toPandas()
 
-        # Calculate sentiment indicators using pandas
+        # Calculate sentiment metrics
         recent_returns = pdf['daily_return'].head(10).dropna()
         avg_recent_return = recent_returns.mean() if not recent_returns.empty else 0
-
-        # Volume analysis using pandas
         avg_volume = pdf['Volume'].mean()
         recent_volume = pdf['Volume'].head(5)
         avg_recent_volume = recent_volume.mean() if not recent_volume.empty else 0
 
-        # Determine sentiment
+        # Determine market sentiment
         price_trend = "Bullish" if avg_recent_return > 0 else "Bearish"
         volume_trend = "Increasing" if avg_recent_volume > avg_volume else "Decreasing"
 
-        # Display metrics
+        # Display key metrics
         col1, col2, col3 = st.columns(3)
         with col1:
             st.metric("Price Trend", price_trend)
@@ -74,7 +83,7 @@ def analyze_data(spark: SparkSession, ticker: str, days: int) -> None:
         with col3:
             st.metric("Volume Trend", volume_trend)
 
-        # Create sentiment chart
+        # Create price and volume chart
         fig = make_subplots(
             rows=2, cols=1,
             shared_xaxes=True,
@@ -82,7 +91,7 @@ def analyze_data(spark: SparkSession, ticker: str, days: int) -> None:
             vertical_spacing=0.12
         )
 
-        # Price chart
+        # Add price candlesticks
         fig.add_trace(
             go.Candlestick(
                 x=pdf['Date'],
@@ -95,7 +104,7 @@ def analyze_data(spark: SparkSession, ticker: str, days: int) -> None:
             row=1, col=1
         )
 
-        # Volume chart
+        # Add volume bars
         fig.add_trace(
             go.Bar(
                 x=pdf['Date'],
@@ -118,12 +127,22 @@ def analyze_data(spark: SparkSession, ticker: str, days: int) -> None:
         st.plotly_chart(fig, use_container_width=True)
 
     with seasonal_tab:
+        st.subheader("Seasonal Analysis")
         seasonal_results = analyze_seasonality(df)
         seasonal_pdf = seasonal_results.toPandas()
 
-        # Format the seasonal analysis results
+        # Format seasonal analysis
         seasonal_pdf['month'] = pd.to_datetime(seasonal_pdf['month'], format='%m').dt.strftime('%B')
-        st.write("Monthly Return Patterns:", seasonal_pdf)
+        
+        # Display seasonal patterns
+        st.write("### Monthly Performance Patterns")
+        st.write("""
+        This analysis shows how the stock typically performs in different months.
+        - Higher returns indicate historically strong months
+        - Higher volatility indicates more unpredictable months
+        """)
+        
+        st.dataframe(seasonal_pdf)
 
         # Plot seasonal patterns
         fig = go.Figure()
@@ -135,130 +154,19 @@ def analyze_data(spark: SparkSession, ticker: str, days: int) -> None:
         fig.update_layout(
             title="Monthly Return Patterns",
             xaxis_title="Month",
-            yaxis_title="Average Return (%)"
+            yaxis_title="Average Return (%)",
+            height=500
         )
         st.plotly_chart(fig, use_container_width=True)
 
-    with trend_tab:
-        trend_results = analyze_trend_strength(df)
-        trend_pdf = trend_results.toPandas()
-        
-        # Create trend visualization
-        fig = make_subplots(rows=2, cols=1,
-                           shared_xaxes=True,
-                           subplot_titles=('ADX Trend Strength', 'Directional Indicators'),
-                           vertical_spacing=0.15,
-                           row_heights=[0.6, 0.4])
-
-        # Plot ADX line
-        fig.add_trace(
-            go.Scatter(
-                x=trend_pdf['Date'],
-                y=trend_pdf['adx'],
-                name='ADX',
-                line=dict(color='purple', width=2)
-            ),
-            row=1, col=1
-        )
-
-        # Add threshold lines for ADX
-        fig.add_hline(y=25, line_dash="dash", line_color="red", 
-                     annotation_text="Strong Trend", row=1, col=1)
-        fig.add_hline(y=15, line_dash="dash", line_color="orange", 
-                     annotation_text="Weak Trend", row=1, col=1)
-
-        # Plot +DI and -DI lines
-        fig.add_trace(
-            go.Scatter(
-                x=trend_pdf['Date'],
-                y=trend_pdf['plus_di'],
-                name='+DI',
-                line=dict(color='green', width=1.5)
-            ),
-            row=2, col=1
-        )
-        fig.add_trace(
-            go.Scatter(
-                x=trend_pdf['Date'],
-                y=trend_pdf['minus_di'],
-                name='-DI',
-                line=dict(color='red', width=1.5)
-            ),
-            row=2, col=1
-        )
-
-        # Update layout
-        fig.update_layout(
-            height=800,
-            title_text=f"Trend Analysis for {ticker}",
-            showlegend=True,
-            legend=dict(
-                orientation="h",
-                yanchor="bottom",
-                y=1.02,
-                xanchor="right",
-                x=1
-            )
-        )
-
-        # Add y-axis titles
-        fig.update_yaxes(title_text="ADX Value", row=1, col=1)
-        fig.update_yaxes(title_text="DI Values", row=2, col=1)
-
-        # Display the plot
-        st.plotly_chart(fig, use_container_width=True)
-
-        # Add trend interpretation
-        st.write("### Trend Interpretation")
-        latest = trend_pdf.iloc[-1]
-        
-        # Create columns for metrics
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            st.metric(
-                "Current ADX",
-                f"{latest['adx']:.1f}",
-                delta=latest['trend_strength'],
-                help="Average Directional Index - Measures trend strength"
-            )
-        
-        with col2:
-            st.metric(
-                "+DI",
-                f"{latest['plus_di']:.1f}",
-                help="Positive Directional Indicator"
-            )
-        
-        with col3:
-            st.metric(
-                "-DI",
-                f"{latest['minus_di']:.1f}",
-                help="Negative Directional Indicator"
-            )
-
-        # Add trend explanation
-        st.write(f"""
-        #### Current Trend Analysis:
-        - Trend Strength: **{latest['trend_strength']}**
-        - Direction: **{latest['trend_direction']}**
-        
-        > ADX above 25 indicates a strong trend, while below 15 indicates a weak trend.
-        > When +DI is above -DI, the trend is bullish; when -DI is above +DI, the trend is bearish.
-        """)
-
-    return df  # Return the processed DataFrame
-
+    return df
 
 def analyze_seasonality(df: DataFrame) -> DataFrame:
-    # This helps us see if the stock has regular patterns
-    # For example: Does it usually go up in December? Down in September?
-
-    # Add month and day of week columns
+    """Calculate seasonal patterns in stock performance."""
+    # Add month column
     df = df.withColumn("month", month("Date"))
-    df = df.withColumn("day_of_week", dayofweek("Date"))
 
-    # Calculate average returns by month
+    # Calculate monthly patterns
     monthly_patterns = df.groupBy("month").agg(
         mean("daily_return").alias("avg_return"),
         stddev("daily_return").alias("return_volatility"),
@@ -266,97 +174,3 @@ def analyze_seasonality(df: DataFrame) -> DataFrame:
     )
 
     return monthly_patterns
-
-
-def analyze_trend_strength(df: DataFrame, window: int = 20) -> DataFrame:
-    """
-    Calculate trend strength using ADX (Average Directional Index).
-    
-    Args:
-        df: DataFrame with OHLC data
-        window: Period for calculations (default 20)
-    
-    Returns:
-        DataFrame with trend indicators
-    """
-    # Create window specs with proper partitioning
-    window_spec = Window.orderBy("Date").rowsBetween(-window, 0)
-    lag_window = Window.orderBy("Date")
-
-    # Calculate True Range
-    df = df.withColumn(
-        "high_low", col("High") - col("Low")
-    ).withColumn(
-        "high_close", abs(col("High") - lag("Close", 1).over(lag_window))
-    ).withColumn(
-        "low_close", abs(col("Low") - lag("Close", 1).over(lag_window))
-    ).withColumn(
-        "true_range",
-        greatest(
-            col("high_low"),
-            col("high_close"),
-            col("low_close")
-        )
-    )
-
-    # Calculate Directional Movement
-    df = df.withColumn(
-        "plus_dm",
-        when(
-            (col("High") - lag("High", 1).over(lag_window)) >
-            (lag("Low", 1).over(lag_window) - col("Low")),
-            col("High") - lag("High", 1).over(lag_window)
-        ).otherwise(lit(0.0))
-    ).withColumn(
-        "minus_dm",
-        when(
-            (lag("Low", 1).over(lag_window) - col("Low")) >
-            (col("High") - lag("High", 1).over(lag_window)),
-            lag("Low", 1).over(lag_window) - col("Low")
-        ).otherwise(lit(0.0))
-    )
-
-    # Calculate smoothed averages
-    df = df.withColumn(
-        "smoothed_tr", avg("true_range").over(window_spec)
-    ).withColumn(
-        "smoothed_plus_dm", avg("plus_dm").over(window_spec)
-    ).withColumn(
-        "smoothed_minus_dm", avg("minus_dm").over(window_spec)
-    )
-
-    # Calculate directional indicators
-    df = df.withColumn(
-        "plus_di", (col("smoothed_plus_dm") / col("smoothed_tr")) * 100
-    ).withColumn(
-        "minus_di", (col("smoothed_minus_dm") / col("smoothed_tr")) * 100
-    )
-
-    # Calculate ADX
-    df = df.withColumn(
-        "dx",
-        abs(col("plus_di") - col("minus_di")) /
-        (col("plus_di") + col("minus_di")) * 100
-    ).withColumn(
-        "adx",
-        avg("dx").over(window_spec)
-    )
-
-    # Select relevant columns and add trend interpretation
-    result = df.select(
-        "Date",
-        "adx",
-        "plus_di",
-        "minus_di"
-    ).withColumn(
-        "trend_strength",
-        when(col("adx") > 25, "Strong")
-        .when(col("adx") > 15, "Moderate")
-        .otherwise("Weak")
-    ).withColumn(
-        "trend_direction",
-        when(col("plus_di") > col("minus_di"), "Bullish")
-        .otherwise("Bearish")
-    )
-
-    return result.orderBy(desc("Date"))
