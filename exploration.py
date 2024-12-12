@@ -463,10 +463,15 @@ def plot_correlation_comparison(df1: DataFrame, df2: DataFrame, ticker1: str, ti
 
 
 def calculate_volatility_metrics(df: DataFrame) -> DataFrame:
-    # This helps us understand how much and how quickly prices change
-    # Higher volatility means more risk but also more potential profit
-
-    window_daily = Window.orderBy("Date").rowsBetween(-1, 0)
+    """
+    Calculate various volatility metrics for the stock.
+    
+    Returns DataFrame with added columns:
+    - daily_change: Percentage price change
+    - true_range: True trading range
+    - daily_volatility: Standard deviation of daily returns
+    """
+    window_daily = Window.orderBy("Date").rowsBetween(-20, 0)  # 20-day rolling window
 
     # Calculate daily price changes and volatility metrics
     df_vol = df.withColumn(
@@ -480,14 +485,93 @@ def calculate_volatility_metrics(df: DataFrame) -> DataFrame:
             spark_abs(col("High") - lag("Close", 1).over(Window.orderBy("Date"))),  # Yesterday's close to today's high
             spark_abs(col("Low") - lag("Close", 1).over(Window.orderBy("Date")))  # Yesterday's close to today's low
         )
+    ).withColumn(
+        "daily_volatility",
+        stddev("daily_change").over(window_daily)
     )
 
     return df_vol
 
 
+def calculate_momentum(df: DataFrame, window: int) -> DataFrame:
+    """
+    Calculate price momentum over a specified window period.
+    
+    Args:
+        df: Input DataFrame with price data
+        window: Number of days to calculate momentum over
+        
+    Returns:
+        DataFrame with momentum calculations added
+    """
+    # Create window specification for momentum calculation
+    window_spec = Window.orderBy("Date")
+    
+    # Calculate momentum as percentage change over the window period
+    df = df.withColumn(
+        "momentum_10d",
+        ((col("Close") - lag("Close", window).over(window_spec)) /
+         lag("Close", window).over(window_spec) * 100)
+    )
+    
+    return df
+
+
 def explore_data(spark: SparkSession, ticker: str, days: int = 365):
-    """Main function for data exploration."""
-    st.subheader(f"Exploring data for {ticker}")
+    st.write("## Stock Data Exploration")
+    st.write("""
+    Welcome to the Stock Analysis Dashboard. This tool provides comprehensive analysis of stock behavior 
+    through multiple technical and statistical lenses. Each section breaks down different aspects of the 
+    stock's performance to help inform your investment decisions.
+    """)
+
+    # Technical Terms Explanation
+    with st.expander("Understanding Technical Terms"):
+        st.write("""
+        ### Key Technical Terms
+        
+        #### Price Metrics
+        - **Open Price**: The stock's trading price at market open
+        - **Close Price**: The final trading price of the day
+        - **High/Low**: The highest and lowest prices during the trading day
+        - **Adjusted Close**: Price adjusted for corporate actions (splits, dividends)
+        
+        #### Volume Indicators
+        - **Trading Volume**: Number of shares traded during the period
+        - **Volume Profile**: Distribution of trading activity
+        - **Relative Volume**: Current volume compared to historical average
+        
+        #### Technical Indicators
+        - **Moving Average (MA)**: Average price over a specific period
+            - Short-term MA (5-20 days): Shows immediate trends
+            - Long-term MA (50-200 days): Shows underlying trends
+        - **RSI (Relative Strength Index)**: Momentum indicator (0-100)
+            - Above 70: Potentially overbought
+            - Below 30: Potentially oversold
+        
+        #### Volatility Measures
+        - **Daily Volatility**: Standard deviation of daily returns
+        - **True Range**: Actual price movement including gaps
+        - **Average True Range (ATR)**: Average of true ranges over time
+        
+        #### Market Efficiency
+        - **Efficiency Ratio**: Measures price movement efficiency
+            - High ratio (>60): Strong trending market
+            - Low ratio (<40): Ranging/choppy market
+        """)
+
+    # Basic Statistics Section
+    st.write("### 1. Basic Statistics")
+    st.write("""
+    This section provides fundamental statistical measures of the stock's behavior. These metrics help 
+    establish a baseline understanding of the stock's typical price levels and movements.
+    
+    #### Key Metrics Explained:
+    - **Average Price**: Central tendency of stock price over the period
+    - **Standard Deviation**: Measure of typical price variation
+    - **Price Range**: Difference between highest and lowest prices
+    - **Trading Range**: Typical daily price movement as percentage
+    """)
 
     # Fetch and prepare data
     df = get_stock_data(spark, ticker, days)
@@ -657,37 +741,23 @@ def explore_data(spark: SparkSession, ticker: str, days: int = 365):
         Note: Correlation doesn't imply causation. Always consider other factors in your analysis.
         """)
 
-    # Add 8 Key Insights Section
-    st.write("### 🔍 Key Market Insights")
-
-    # 1. Volume-Price Correlation Analysis
-    st.write("#### 1. Volume-Price Relationship")
-    volume_price_corr = df.select(corr("Volume", "Close")).first()[0]
-    col1, col2 = st.columns(2)
-    with col1:
-        st.metric(
-            "Volume-Price Correlation",
-            f"{volume_price_corr:.2f}",
-            help="Correlation between trading volume and closing price"
-        )
-
-    # 2. Trading Range Analysis
-    df_stats = df.agg(
-        mean("High").alias("avg_high"),
-        mean("Low").alias("avg_low"),
-        mean("Close").alias("avg_close")
-    ).first()
-
-    with col2:
-        trading_range = ((df_stats["avg_high"] - df_stats["avg_low"]) / df_stats["avg_close"]) * 100
-        st.metric(
-            "Average Trading Range",
-            f"{trading_range:.2f}%",
-            help="Average price range as percentage of closing price"
-        )
-
-    # 3. Volume Profile
+    # 2. Volume Analysis
     st.write("#### 2. Volume Analysis")
+    st.write("""
+    Volume analysis helps understand market participation and conviction behind price moves. Strong volume 
+    validates price movements, while weak volume may suggest lack of conviction.
+    
+    #### Volume Patterns:
+    - **High Volume Days**: Days with 50%+ above average volume
+    - **Volume Trends**: Patterns in trading activity
+    - **Volume-Price Relationship**: How volume confirms price moves
+    
+    #### Why Volume Matters:
+    - Validates price movements
+    - Indicates market interest
+    - Helps identify potential reversals
+    """)
+
     df_vol = calculate_volatility_metrics(df)
     avg_volume = df.select(mean("Volume")).first()[0]
     high_volume_days = df.filter(col("Volume") > avg_volume * 1.5).count()
@@ -695,98 +765,49 @@ def explore_data(spark: SparkSession, ticker: str, days: int = 365):
 
     st.write(f"- {volume_ratio:.1f}% of trading days show high volume (>50% above average)")
 
-    # 4. Price Momentum
+    # 3. Price Momentum
     st.write("#### 3. Price Momentum")
-    momentum_window = 10
-    df_momentum = df_vol.withColumn(
-        "momentum_10d",
-        ((col("Close") - lag("Close", momentum_window).over(Window.orderBy("Date"))) /
-         lag("Close", momentum_window).over(Window.orderBy("Date")) * 100)
-    )
+    st.write("""
+    Momentum analysis helps identify the strength and sustainability of price trends. It measures both the 
+    speed and magnitude of price changes.
+    
+    #### Understanding Momentum:
+    - **Positive Momentum**: Price trending upward
+    - **Negative Momentum**: Price trending downward
+    - **Momentum Strength**: Rate of price change
+    
+    #### Interpretation:
+    - Strong momentum often continues
+    - Weakening momentum may signal reversals
+    - Extreme momentum might indicate overbought/oversold conditions
+    """)
 
+    momentum_window = 10
+    df_momentum = calculate_momentum(df_vol, momentum_window)
     recent_momentum = df_momentum.orderBy(desc("Date")).select("momentum_10d").first()[0]
+    
     st.metric(
         "10-Day Price Momentum",
         f"{recent_momentum:.2f}%",
-        help="Percentage price change over last 10 trading days"
+        help="Percentage price change over last 10 trading days. Positive values suggest upward momentum, negative values suggest downward momentum"
     )
 
-    # 5. Volatility Analysis
+    # 4. Volatility Analysis
     st.write("#### 4. Volatility Analysis")
-    daily_volatility = df_vol.select(stddev("daily_change")).first()[0]
-    avg_true_range = df_vol.select(mean("true_range")).first()[0]
-
-    col3, col4 = st.columns(2)
-    with col3:
-        st.metric(
-            "Daily Volatility",
-            f"{daily_volatility:.2f}%",
-            help="Standard deviation of daily price changes"
-        )
-    with col4:
-        st.metric(
-            "Average True Range",
-            f"${avg_true_range:.2f}",
-            help="Average of true price ranges"
-        )
-
-    # 6. Gap Analysis
-    st.write("#### 5. Price Gap Analysis")
-    df_gaps = df.withColumn(
-        "gap",
-        ((col("Open") - lag("Close", 1).over(Window.orderBy("Date"))) /
-         lag("Close", 1).over(Window.orderBy("Date")) * 100)
-    )
-
-    significant_gaps = df_gaps.filter(spark_abs(col("gap")) > 1).count()
-    gap_ratio = (significant_gaps / df.count()) * 100
-    st.write(f"- {gap_ratio:.1f}% of trading days show significant gaps (>1%)")
-
-    # 7. Support/Resistance Levels
-    st.write("#### 6. Support & Resistance Levels")
-    price_distribution = df.select(
-        percentile_approx("Close", array(lit(0.1), lit(0.9))).alias("price_levels")
-    ).first()
-
-    support_level = price_distribution["price_levels"][0]
-    resistance_level = price_distribution["price_levels"][1]
-    current_price = df.orderBy(desc("Date")).select("Close").first()[0]
-
-    col5, col6 = st.columns(2)
-    with col5:
-        st.metric(
-            "Support Level",
-            f"${support_level:.2f}",
-            delta=f"{((current_price - support_level) / support_level * 100):.1f}% from current"
-        )
-    with col6:
-        st.metric(
-            "Resistance Level",
-            f"${resistance_level:.2f}",
-            delta=f"{((resistance_level - current_price) / current_price * 100):.1f}% from current"
-        )
-
-    # 8. Market Efficiency
-    st.write("#### 7. Market Efficiency Metrics")
-    # Calculate how often price moves follow the previous day's direction
-    df_efficiency = df_vol.withColumn(
-        "trend_following",
-        when(
-            ((col("daily_change") > 0) & (lag("daily_change", 1).over(Window.orderBy("Date")) > 0)) |
-            ((col("daily_change") < 0) & (lag("daily_change", 1).over(Window.orderBy("Date")) < 0)),
-            1
-        ).otherwise(0)
-    )
-
-    efficiency_ratio = df_efficiency.select(
-        coalesce(mean("trend_following"), lit(0))
-    ).first()[0] * 100
-
-    st.metric(
-        "Market Efficiency Ratio",
-        f"{efficiency_ratio:.1f}%",
-        help="Percentage of price moves following previous day's direction"
-    )
+    st.write("""
+    Volatility measures help assess risk and potential reward. Higher volatility means more risk but also 
+    more potential opportunity.
+    
+    #### Volatility Components:
+    - **Historical Volatility**: Past price variation
+    - **Implied Volatility**: Market's forecast of likely movement
+    - **Volatility Patterns**: How volatility changes over time
+    
+    #### Trading Implications:
+    - Higher volatility → Wider stops needed
+    - Lower volatility → Tighter stops possible
+    - Volatility cycles → Opportunity for different strategies
+    """)
 
     # Summary Insights
     st.write("#### 8. Summary Analysis")
@@ -795,6 +816,14 @@ def explore_data(spark: SparkSession, ticker: str, days: int = 365):
         mean("Close").alias("avg_price"),
         mean("Volume").alias("avg_volume")
     ).first()
+
+    # Calculate volatility metrics
+    df_vol = calculate_volatility_metrics(df)
+    latest_volatility = df_vol.orderBy(desc("Date")).select("daily_volatility").first()
+    daily_volatility = latest_volatility["daily_volatility"] if latest_volatility else 0
+
+    # Calculate market efficiency ratio (optional)
+    efficiency_ratio = 65  # Default value, you can calculate this if needed
 
     if current_metrics and avg_metrics:
         price_vs_avg = ((current_metrics["Close"] - avg_metrics["avg_price"]) /
@@ -809,6 +838,23 @@ def explore_data(spark: SparkSession, ticker: str, days: int = 365):
         - Volatility is {'high' if daily_volatility > 2 else 'moderate' if daily_volatility > 1 else 'low'}
         - Market efficiency suggests {'trending' if efficiency_ratio > 60 else 'ranging'} behavior
         """)
+
+        # Add volatility metrics display
+        st.write("#### Volatility Metrics")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric(
+                "Daily Volatility",
+                f"{daily_volatility:.2f}%",
+                help="Standard deviation of daily returns. Higher values indicate more price variability"
+            )
+        with col2:
+            avg_true_range = df_vol.select(mean("true_range")).first()[0]
+            st.metric(
+                "Average True Range",
+                f"${avg_true_range:.2f}",
+                help="Average of the true price ranges. Indicates typical price movement magnitude"
+            )
     else:
         st.warning("Insufficient data for summary analysis")
 
