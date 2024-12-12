@@ -72,7 +72,7 @@ The project is modular, consisting of the following main components:
    On MacOS:
 
    ```sh
-   python3 -m venv .venv
+   python3.11 -m venv .venv
    source .venv/bin/activate  
    ```
    on Windows
