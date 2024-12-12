@@ -298,11 +298,81 @@ def plot_technical_indicators(df: DataFrame, ticker: str):
 
 
 def preprocess_data(spark: SparkSession, ticker: str, days: int = 365):
-    """Main function for preprocessing."""
-    st.subheader(f"📊 Advanced Technical Analysis for {ticker}")
+    """
+    Preprocess and analyze stock data with technical indicators.
+    """
+    st.write("## Technical Analysis & Preprocessing")
     
+    # Technical Indicators Explanation
+    with st.expander("Understanding Technical Indicators"):
+        st.write("""
+        ### Technical Indicators Guide
+        
+        #### RSI (Relative Strength Index)
+        A momentum oscillator that measures the speed and magnitude of price changes:
+        - **Scale**: 0 to 100
+        - **Overbought**: Above 70 - potential sell signal
+        - **Oversold**: Below 30 - potential buy signal
+        - **Calculation**: Compares average gains to average losses
+        
+        #### MACD (Moving Average Convergence Divergence)
+        Shows the relationship between two moving averages of prices:
+        - **Components**:
+            - MACD Line: Difference between 12 and 26-day EMAs
+            - Signal Line: 9-day EMA of MACD Line
+            - Histogram: MACD Line minus Signal Line
+        - **Signals**:
+            - Bullish: MACD crosses above Signal Line
+            - Bearish: MACD crosses below Signal Line
+        
+        #### Bollinger Bands
+        Shows price volatility and potential overbought/oversold levels:
+        - **Components**:
+            - Middle Band: 20-day moving average
+            - Upper Band: Middle Band + (2 × standard deviation)
+            - Lower Band: Middle Band - (2 × standard deviation)
+        - **Interpretation**:
+            - Price near Upper Band: Potentially overbought
+            - Price near Lower Band: Potentially oversold
+            - Band Width: Indicates volatility
+        
+        #### Trading Signals
+        Combined analysis of multiple indicators:
+        - **Strong Buy**: Multiple indicators align bullish
+        - **Buy**: Some bullish indicators
+        - **Hold**: Mixed or neutral signals
+        - **Sell**: Some bearish indicators
+        - **Strong Sell**: Multiple indicators align bearish
+        """)
+
+    # Data Quality Section
+    st.write("### 1. Data Quality Analysis")
+    st.write("""
+    Before applying technical indicators, we ensure data quality and handle any issues:
+    - Check for missing values
+    - Identify and handle outliers
+    - Verify data consistency
+    - Adjust for stock splits and dividends
+    """)
+
+    # Technical Analysis Section
+    st.write("### 2. Technical Analysis")
+    st.write("""
+    We apply multiple technical indicators to identify potential trading opportunities:
+    
+    #### Why Multiple Indicators?
+    - **Confirmation**: Multiple indicators provide stronger signals
+    - **Different Aspects**: Each indicator shows different market characteristics
+    - **Risk Management**: Helps avoid false signals
+    """)
+
     # Get stock data and calculate all indicators
     df = get_stock_data(spark, ticker, days)
+    
+    if df is None or df.rdd.isEmpty():
+        st.error(f"No data available for {ticker}")
+        return None
+        
     df = calculate_rsi(df)
     df = calculate_macd(df)
     df = calculate_bollinger_bands(df)
@@ -312,96 +382,125 @@ def preprocess_data(spark: SparkSession, ticker: str, days: int = 365):
     fig = plot_technical_indicators(df, ticker)
     st.plotly_chart(fig, use_container_width=True)
     
-    # Get latest values for analysis
+    # Get latest values for analysis with error handling
     latest = df.orderBy(desc("Date")).first()
     
+    if latest is None:
+        st.warning("Unable to retrieve latest data for analysis")
+        return None
+
     # Trading Signals Analysis
-    st.write("### Trading Signals Analysis")
+    st.write("### 3. Trading Signals Analysis")
+    st.write("""
+    Combined analysis of technical indicators to generate trading signals:
     
-    sentiment = latest["sentiment"]
-    strength = latest["sentiment_strength"]
+    #### Signal Strength
+    - **Strong Buy**: RSI < 30 + Positive MACD Crossover
+    - **Buy**: RSI < 40 + Positive MACD
+    - **Hold**: Neutral conditions
+    - **Sell**: RSI > 60 + Negative MACD
+    - **Strong Sell**: RSI > 70 + Negative MACD Crossover
     
-    # Create a more detailed analysis message
-    analysis_message = f"""
-    #### Overall Market Sentiment: {sentiment} (Strength: {strength:.1%})
+    #### Risk Assessment
+    - Consider volatility when sizing positions
+    - Use stops based on Average True Range
+    - Monitor volume for signal confirmation
+    """)
     
-    Current Signals for {ticker}:
-    - Short-term trend (10-day MA): {"Bullish" if latest["signal_short_term"] > 0 else "Bearish"}
-    - Medium-term trend (50-day MA): {"Bullish" if latest["signal_medium_term"] > 0 else "Bearish"}
-    - Long-term trend (200-day MA): {"Bullish" if latest["signal_long_term"] > 0 else "Bearish"}
-    - RSI Signal: {"Oversold (Bullish)" if latest["signal_rsi"] > 0 else "Overbought (Bearish)" if latest["signal_rsi"] < 0 else "Neutral"}
-    - MACD Signal: {"Bullish" if latest["signal_macd"] > 0 else "Bearish"}
+    try:
+        sentiment = latest["sentiment"]
+        strength = latest["sentiment_strength"]
+        
+        # Create a more detailed analysis message
+        analysis_message = f"""
+        #### Overall Market Sentiment: {sentiment} (Strength: {strength:.1%})
+        
+        Current Signals for {ticker}:
+        - Short-term trend (10-day MA): {"Bullish" if latest["signal_short_term"] > 0 else "Bearish"}
+        - Medium-term trend (50-day MA): {"Bullish" if latest["signal_medium_term"] > 0 else "Bearish"}
+        - Long-term trend (200-day MA): {"Bullish" if latest["signal_long_term"] > 0 else "Bearish"}
+        - RSI Signal: {"Oversold (Bullish)" if latest["signal_rsi"] > 0 else "Overbought (Bearish)" if latest["signal_rsi"] < 0 else "Neutral"}
+        - MACD Signal: {"Bullish" if latest["signal_macd"] > 0 else "Bearish"}
+        
+        Price is currently:
+        - {"Above" if latest["Close"] > latest["ma_200"] else "Below"} 200-day moving average
+        - {"Above" if latest["Close"] > latest["ma_50"] else "Below"} 50-day moving average
+        - {"Above" if latest["Close"] > latest["ma_10"] else "Below"} 10-day moving average
+        """
+        
+        if sentiment == "Bullish":
+            st.success(analysis_message)
+        elif sentiment == "Bearish":
+            st.error(analysis_message)
+        else:
+            st.info(analysis_message)
+            
+    except (KeyError, TypeError) as e:
+        st.warning(f"Unable to generate complete analysis: Some indicators are missing")
+        st.error(f"Error details: {str(e)}")
     
-    Price is currently:
-    - {"Above" if latest["Close"] > latest["ma_200"] else "Below"} 200-day moving average
-    - {"Above" if latest["Close"] > latest["ma_50"] else "Below"} 50-day moving average
-    - {"Above" if latest["Close"] > latest["ma_10"] else "Below"} 10-day moving average
-    
-    Always combine this technical analysis with fundamental research before making investment decisions.
-    """
-    
-    if sentiment == "Bullish":
-        st.success(analysis_message)
-    elif sentiment == "Bearish":
-        st.error(analysis_message)
-    else:
-        st.info(analysis_message)
-    
-    # Technical Indicators Interpretation
+    # Technical Indicators Interpretation with error handling
     st.write("### Technical Indicators Analysis")
     
-    # Get latest values
-    latest = df.orderBy(desc("Date")).first()
-    
-    # RSI Analysis
-    st.write("#### RSI Analysis")
-    rsi_value = latest["rsi"]
-    rsi_signal = ("Oversold" if rsi_value < 30 else 
-                 "Overbought" if rsi_value > 70 else 
-                 "Neutral")
-    
-    st.metric(
-        "RSI (14)",
-        f"{rsi_value:.2f}",
-        delta=rsi_signal,
-        delta_color="off"
-    )
-    
-    # MACD Analysis
-    st.write("#### MACD Analysis")
-    macd_value = float(latest["macd_line"] or 0.0)
-    signal_value = float(latest["signal_line"] or 0.0)
-    macd_signal = "Bullish" if macd_value > signal_value else "Bearish"
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        st.metric(
-            "MACD Line",
-            f"{macd_value:.2f}",
-            delta=macd_signal,
-            delta_color="off"
-        )
-    with col2:
-        st.metric(
-            "Signal Line",
-            f"{signal_value:.2f}"
-        )
-    
-    # Bollinger Bands Analysis
-    st.write("#### Bollinger Bands Analysis")
-    bb_position = ((latest["Close"] - latest["bb_lower"]) / 
-                  (latest["bb_upper"] - latest["bb_lower"]) * 100)
-    
-    bb_signal = ("Oversold" if bb_position < 20 else 
-                "Overbought" if bb_position > 80 else 
-                "Neutral")
-    
-    st.metric(
-        "Price Position in BB (%)",
-        f"{bb_position:.2f}%",
-        delta=bb_signal,
-        delta_color="off"
-    )
+    try:
+        # RSI Analysis
+        st.write("#### RSI Analysis")
+        rsi_value = latest["rsi"]
+        if rsi_value is not None:
+            rsi_signal = ("Oversold" if rsi_value < 30 else 
+                         "Overbought" if rsi_value > 70 else 
+                         "Neutral")
+            
+            st.metric(
+                "RSI (14)",
+                f"{rsi_value:.2f}",
+                delta=rsi_signal,
+                delta_color="off"
+            )
+        else:
+            st.warning("RSI data not available")
+        
+        # MACD Analysis
+        st.write("#### MACD Analysis")
+        macd_value = float(latest["macd_line"] or 0.0)
+        signal_value = float(latest["signal_line"] or 0.0)
+        macd_signal = "Bullish" if macd_value > signal_value else "Bearish"
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric(
+                "MACD Line",
+                f"{macd_value:.2f}",
+                delta=macd_signal,
+                delta_color="off"
+            )
+        with col2:
+            st.metric(
+                "Signal Line",
+                f"{signal_value:.2f}"
+            )
+        
+        # Bollinger Bands Analysis
+        st.write("#### Bollinger Bands Analysis")
+        if all(key in latest for key in ["Close", "bb_lower", "bb_upper"]):
+            bb_position = ((latest["Close"] - latest["bb_lower"]) / 
+                          (latest["bb_upper"] - latest["bb_lower"]) * 100)
+            
+            bb_signal = ("Oversold" if bb_position < 20 else 
+                        "Overbought" if bb_position > 80 else 
+                        "Neutral")
+            
+            st.metric(
+                "Price Position in BB (%)",
+                f"{bb_position:.2f}%",
+                delta=bb_signal,
+                delta_color="off"
+            )
+        else:
+            st.warning("Bollinger Bands data not available")
+            
+    except Exception as e:
+        st.error(f"Error analyzing technical indicators: {str(e)}")
     
     # Export options
     st.write("### Export Processed Data")
