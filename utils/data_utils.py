@@ -3,11 +3,12 @@ import yfinance as yf
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.types import *
 
+
 def get_stock_data(spark: SparkSession, ticker: str, days: int = 365) -> DataFrame:
     """Fetch stock data and convert to Spark DataFrame with optimized configuration."""
     # Configure Spark for better performance
     spark.conf.set("spark.sql.shuffle.partitions", "8")  # Adjust based on your data size
-    spark.conf.set("spark.sql.execution.arrow.enabled", "true")
+    spark.conf.set('spark.sql.execution.arrow.pyspark.enabled', "true")
 
     # Get data from yfinance
     stock = yf.Ticker(ticker)
@@ -31,4 +32,4 @@ def get_stock_data(spark: SparkSession, ticker: str, days: int = 365) -> DataFra
     df = spark.createDataFrame(pdf.reset_index(), schema=schema)
 
     # Cache the DataFrame since we'll be using it multiple times
-    return df.cache() 
+    return df.cache()
