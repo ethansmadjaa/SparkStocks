@@ -9,6 +9,7 @@ from exploration import explore_data
 from preprocessing import preprocess_data
 from utils.constants import STOCK_CATEGORIES
 from utils.spark_utils import create_spark_session
+from utils.stop_spark import stop_spark
 
 
 def get_ytd_days():
@@ -238,7 +239,7 @@ def main():
         </div>
         """, unsafe_allow_html=True)
 
-    # Start up our Spark session - this is what powers our big data processing
+    # Create Spark session first
     spark = create_spark_session()
 
     # Create three main tabs for different types of analysis
@@ -252,7 +253,7 @@ def main():
     with tab3:
         analyze_data(spark, selected_stock, days)
 
-    # Always clean up our Spark session when we're done
+    # Clean up at the end
     spark.stop()
 
 
